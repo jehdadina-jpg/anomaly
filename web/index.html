@@ -1,0 +1,1056 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ANOMALY TERMINAL</title>
+  <meta name="description" content="NSE Equities Anomaly Detection Terminal — 4-model unsupervised ensemble for detecting market manipulation in Indian equities.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root {
+      --bg: #000000;
+      --bg-panel: #070707;
+      --bg-cell: #0c0c0c;
+      --border: #222222;
+      --border-focus: #444444;
+      --amber: #ff9900;
+      --amber-dim: #7a4d00;
+      --amber-bg: rgba(255, 153, 0, 0.06);
+      --green: #00cc66;
+      --green-dim: rgba(0, 204, 102, 0.12);
+      --red: #ff3333;
+      --red-dim: rgba(255, 51, 51, 0.10);
+      --text: #b0b0b0;
+      --text-dim: #555555;
+      --white: #e0e0e0;
+      --mono: 'IBM Plex Mono', 'Consolas', 'Courier New', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.5;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      cursor: default;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: #333; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--amber-dim); }
+
+    /* ═══════════════════════════════════════════
+       TOP BAR
+       ═══════════════════════════════════════════ */
+    .top-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 10px;
+      height: 26px;
+      border-bottom: 1px solid var(--amber);
+      background: var(--bg-panel);
+      flex-shrink: 0;
+    }
+    .top-bar .logo {
+      color: var(--amber);
+      font-weight: 700;
+      font-size: 12px;
+      letter-spacing: 3px;
+    }
+    .top-bar .meta {
+      color: var(--text-dim);
+      font-size: 11px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .top-bar .meta .val { color: var(--amber); }
+    .top-bar .meta .ok { color: var(--green); }
+    .top-bar .meta .err { color: var(--red); }
+
+    /* ═══════════════════════════════════════════
+       TICKER TAPE
+       ═══════════════════════════════════════════ */
+    .tape-wrap {
+      border-bottom: 1px solid var(--border);
+      overflow: hidden;
+      height: 20px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      background: var(--bg);
+    }
+    .tape-label {
+      background: var(--amber);
+      color: #000;
+      font-weight: 700;
+      font-size: 9px;
+      letter-spacing: 1px;
+      padding: 0 8px;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .tape-scroll {
+      overflow: hidden;
+      flex: 1;
+      white-space: nowrap;
+    }
+    .tape-inner {
+      display: inline-block;
+      animation: tape 180s linear infinite;
+      padding-left: 12px;
+    }
+    @keyframes tape {
+      from { transform: translateX(0); }
+      to { transform: translateX(-50%); }
+    }
+    .tape-item { display: inline; margin-right: 28px; font-size: 11px; }
+    .tape-item .sym { color: var(--white); font-weight: 600; }
+    .tape-item .px { color: var(--text); }
+    .tape-item .up { color: var(--green); }
+    .tape-item .dn { color: var(--red); }
+    .tape-item .ts { color: var(--text-dim); font-size: 9px; }
+    .tape-item .flag { color: var(--red); font-weight: 700; }
+
+    /* ═══════════════════════════════════════════
+       MAIN 3-PANEL LAYOUT
+       ═══════════════════════════════════════════ */
+    .main {
+      display: grid;
+      grid-template-columns: 270px 1fr 290px;
+      flex: 1;
+      min-height: 0;
+    }
+
+    .panel {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      border-right: 1px solid var(--border);
+    }
+    .panel:last-child { border-right: none; }
+
+    .panel-hdr {
+      padding: 4px 10px;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+      color: var(--amber);
+      font-weight: 700;
+      font-size: 11px;
+      letter-spacing: 1.5px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+      height: 24px;
+    }
+    .panel-hdr .cnt { color: var(--text-dim); font-weight: 400; font-size: 10px; }
+
+    .panel-body {
+      flex: 1;
+      overflow-y: auto;
+      min-height: 0;
+    }
+
+    /* ═══════════════════════════════════════════
+       LEFT PANEL — SECURITIES LIST
+       ═══════════════════════════════════════════ */
+    .search-box {
+      width: 100%;
+      padding: 5px 10px;
+      background: var(--bg);
+      border: none;
+      border-bottom: 1px solid var(--border);
+      color: var(--amber);
+      font-family: var(--mono);
+      font-size: 11px;
+      outline: none;
+    }
+    .search-box::placeholder { color: var(--text-dim); }
+    .search-box:focus { border-bottom-color: var(--amber-dim); }
+
+    .stock-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 6px;
+      padding: 4px 10px;
+      cursor: pointer;
+      border-bottom: 1px solid #0e0e0e;
+      border-left: 2px solid transparent;
+      transition: background 0.08s;
+    }
+    .stock-row:hover { background: #0d0d0d; }
+    .stock-row.active {
+      background: #110e00;
+      border-left-color: var(--amber);
+    }
+    .stock-row.anomaly { border-left-color: var(--red); }
+    .stock-row.anomaly.active {
+      background: #120505;
+      border-left-color: var(--red);
+    }
+
+    .row-left .sym { color: var(--white); font-weight: 600; font-size: 11px; }
+    .row-left .sym .flag { color: var(--red); margin-left: 3px; font-size: 10px; }
+    .row-left .sub { color: var(--text-dim); font-size: 9px; margin-top: 1px; }
+
+    .row-right { text-align: right; }
+    .row-right .px { font-weight: 600; font-size: 11px; }
+    .row-right .chg { font-size: 10px; }
+    .row-right .asof { color: var(--text-dim); font-size: 8px; display: block; margin-top: 1px; }
+
+    .up { color: var(--green); }
+    .dn { color: var(--red); }
+
+    /* ═══════════════════════════════════════════
+       CENTER PANEL — PRICE & CHART
+       ═══════════════════════════════════════════ */
+    .detail-area {
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      height: 100%;
+    }
+
+    .detail-head {
+      border: 1px solid var(--border);
+      padding: 10px 12px;
+      background: var(--bg-panel);
+    }
+    .detail-head .sym-row {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+    }
+    .detail-head .sym-big {
+      font-size: 22px;
+      color: var(--amber);
+      font-weight: 700;
+      letter-spacing: 1px;
+    }
+    .detail-head .sector {
+      color: var(--text-dim);
+      font-size: 10px;
+      letter-spacing: 0.5px;
+    }
+    .detail-head .anomaly-tag {
+      font-size: 9px;
+      font-weight: 700;
+      padding: 1px 6px;
+      color: #000;
+      background: var(--red);
+      letter-spacing: 1px;
+    }
+
+    .price-block { margin-top: 10px; }
+    .price-main {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -1px;
+    }
+    .price-change {
+      font-size: 14px;
+      font-weight: 600;
+      margin-left: 10px;
+    }
+    .price-asof {
+      color: var(--text-dim);
+      font-size: 10px;
+      margin-top: 4px;
+    }
+    .price-asof em { color: var(--amber-dim); font-style: normal; }
+    .live-badge {
+      display: inline-block;
+      font-size: 8px;
+      font-weight: 700;
+      padding: 1px 5px;
+      letter-spacing: 1px;
+      vertical-align: middle;
+      margin-left: 6px;
+    }
+    .live-badge.on { background: var(--green); color: #000; }
+    .live-badge.off { background: #333; color: var(--text-dim); }
+
+    .stat-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      background: var(--border);
+      margin-top: 10px;
+    }
+    .stat-cell {
+      background: var(--bg);
+      padding: 6px 8px;
+    }
+    .stat-cell .lbl {
+      color: var(--text-dim);
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .stat-cell .val {
+      color: var(--white);
+      font-weight: 600;
+      margin-top: 2px;
+      font-size: 13px;
+    }
+
+    .chart-wrap {
+      flex: 1;
+      min-height: 180px;
+      border: 1px solid var(--border);
+      padding: 6px;
+      position: relative;
+      background: var(--bg);
+    }
+    .chart-wrap .chart-label {
+      position: absolute;
+      top: 6px;
+      right: 10px;
+      font-size: 9px;
+      color: var(--text-dim);
+      letter-spacing: 0.5px;
+    }
+
+    /* ═══════════════════════════════════════════
+       RIGHT PANEL — ANOMALY ANALYSIS
+       ═══════════════════════════════════════════ */
+    .right-section {
+      padding: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .right-section:last-child { border-bottom: none; }
+    .right-section h4 {
+      font-size: 10px;
+      letter-spacing: 1px;
+      margin-bottom: 6px;
+      color: var(--amber);
+      font-weight: 700;
+    }
+
+    /* Model agreement grid */
+    .model-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 3px;
+    }
+    .model-cell {
+      border: 1px solid var(--border);
+      padding: 5px 7px;
+      background: var(--bg);
+    }
+    .model-cell .m-name {
+      font-size: 9px;
+      color: var(--text-dim);
+      letter-spacing: 0.5px;
+    }
+    .model-cell .m-status {
+      font-weight: 700;
+      font-size: 11px;
+      margin-top: 2px;
+    }
+    .model-cell.flagged { border-color: var(--red); background: var(--red-dim); }
+    .model-cell.clean { border-color: #1a3320; background: var(--green-dim); }
+
+    /* Feature grid */
+    .feat-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 3px;
+    }
+    .feat-cell {
+      border: 1px solid var(--border);
+      padding: 4px 7px;
+      background: var(--bg);
+    }
+    .feat-cell .fl {
+      color: var(--text-dim);
+      font-size: 9px;
+    }
+    .feat-cell .fv {
+      color: var(--amber);
+      font-weight: 600;
+      margin-top: 1px;
+      font-size: 11px;
+    }
+
+    /* Explanation list */
+    .explain-list {
+      list-style: none;
+    }
+    .explain-list li {
+      padding: 3px 0;
+      font-size: 10px;
+      color: var(--text);
+      border-bottom: 1px solid #111;
+      line-height: 1.4;
+    }
+    .explain-list li:last-child { border-bottom: none; }
+    .explain-list li::before {
+      content: '▸ ';
+      color: var(--amber);
+    }
+
+    /* SEBI box */
+    .sebi-box {
+      padding: 6px 8px;
+      border: 1px solid var(--amber-dim);
+      background: var(--amber-bg);
+      font-size: 10px;
+      line-height: 1.4;
+    }
+    .sebi-box .st {
+      color: var(--amber);
+      font-weight: 700;
+      margin-bottom: 3px;
+      letter-spacing: 0.5px;
+      font-size: 10px;
+    }
+    .sebi-box .st-body { color: var(--text); }
+
+    /* Alert boxes */
+    .alert-box {
+      padding: 8px;
+      border: 1px solid var(--border);
+    }
+    .alert-box.warn { border-color: var(--red); background: var(--red-dim); }
+    .alert-box.ok { border-color: #1a3320; background: var(--green-dim); }
+    .alert-box h4 {
+      font-size: 10px;
+      letter-spacing: 1px;
+      margin-bottom: 4px;
+    }
+    .alert-box.warn h4 { color: var(--red); }
+    .alert-box.ok h4 { color: var(--green); }
+
+    .normal-msg {
+      font-size: 10px;
+      color: var(--text-dim);
+      line-height: 1.5;
+      margin-top: 4px;
+    }
+
+    .empty-msg {
+      padding: 20px 10px;
+      color: var(--text-dim);
+      font-size: 11px;
+      text-align: center;
+    }
+
+    /* ═══════════════════════════════════════════
+       BOTTOM STATUS BAR
+       ═══════════════════════════════════════════ */
+    .status-bar {
+      display: flex;
+      justify-content: space-between;
+      padding: 0 10px;
+      height: 20px;
+      align-items: center;
+      background: var(--bg-panel);
+      border-top: 1px solid var(--amber);
+      font-size: 10px;
+      color: var(--text-dim);
+      flex-shrink: 0;
+    }
+    .status-bar .ok { color: var(--green); }
+    .status-bar .err { color: var(--red); }
+    .status-bar .amber { color: var(--amber); }
+
+    /* ═══════════════════════════════════════════
+       RESPONSIVE (rare for terminal, but safe)
+       ═══════════════════════════════════════════ */
+    @media (max-width: 1100px) {
+      .main { grid-template-columns: 220px 1fr 240px; }
+    }
+    @media (max-width: 900px) {
+      .main { grid-template-columns: 1fr; }
+      .panel { border-right: none; border-bottom: 1px solid var(--border); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ═══ TOP BAR ═══ -->
+  <div class="top-bar">
+    <div class="logo">ANOMALY TERMINAL</div>
+    <div class="meta">
+      <span>NSE EQUITIES</span>
+      <span>4-MODEL ENSEMBLE</span>
+      <span class="val" id="clockDisplay">--:--:-- IST</span>
+      <span id="connStatus">CONNECTING...</span>
+    </div>
+  </div>
+
+  <!-- ═══ TICKER TAPE ═══ -->
+  <div class="tape-wrap">
+    <div class="tape-label">TAPE</div>
+    <div class="tape-scroll">
+      <div class="tape-inner" id="tickerTape">LOADING MARKET DATA...</div>
+    </div>
+  </div>
+
+  <!-- ═══ MAIN 3-PANEL GRID ═══ -->
+  <div class="main">
+
+    <!-- LEFT: SECURITIES LIST -->
+    <div class="panel">
+      <div class="panel-hdr">
+        SECURITIES
+        <span class="cnt" id="stockCount">0</span>
+      </div>
+      <input type="text" class="search-box" id="searchInput"
+             placeholder="FILTER TICKER..." oninput="renderStockList()">
+      <select class="search-box" id="sortSelect" onchange="renderStockList()" style="border-top: none; font-size:10px; color:var(--text-dim); cursor:pointer;">
+        <option value="anomaly">SORT: ANOMALIES FIRST</option>
+        <option value="buyDesc">SORT: BUY SCORE (STRONG BUY - SELL)</option>
+        <option value="buyAsc">SORT: BUY SCORE (STRONG SELL - BUY)</option>
+        <option value="ticker">SORT: TICKER (A-Z)</option>
+      </select>
+      <div class="panel-body" id="stockList">
+        <div class="empty-msg">Loading universe...</div>
+      </div>
+    </div>
+
+    <!-- CENTER: PRICE & CHART -->
+    <div class="panel">
+      <div class="panel-hdr">
+        PRICE &amp; ANOMALY VIEW
+        <span class="cnt" id="chartPeriodLabel">90D</span>
+      </div>
+      <div class="panel-body detail-area">
+        <div class="detail-head">
+          <div class="sym-row">
+            <span class="sym-big" id="activeTicker">— SELECT —</span>
+            <span class="sector" id="activeSector"></span>
+            <span id="anomalyTag"></span>
+          </div>
+          <div class="price-block">
+            <span class="price-main" id="activePrice">—</span>
+            <span class="price-change" id="activePriceChg"></span>
+            <div class="price-asof" id="activePriceAsOf">[price as of —]</div>
+          </div>
+          <div class="stat-row">
+            <div class="stat-cell">
+              <div class="lbl">CHANGE</div>
+              <div class="val" id="activeChg">—</div>
+            </div>
+            <div class="stat-cell">
+              <div class="lbl">DELIVERY %</div>
+              <div class="val" id="activeDelivery">—</div>
+            </div>
+            <div class="stat-cell">
+              <div class="lbl">CONSENSUS</div>
+              <div class="val" id="activeConsensus">—</div>
+            </div>
+            <div class="stat-cell">
+              <div class="lbl">BUY SCORE</div>
+              <div class="val" id="activeScore">—</div>
+            </div>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <span class="chart-label" id="chartLabel">CLOSE — 90 DAYS</span>
+          <canvas id="mainChart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: ANOMALY ANALYSIS -->
+    <div class="panel">
+      <div class="panel-hdr">ANOMALY ANALYSIS</div>
+      <div class="panel-body" id="rightPanel">
+        <div class="empty-msg">Select a security to view analysis.</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ═══ STATUS BAR ═══ -->
+  <div class="status-bar">
+    <span id="statusLeft">ANOMALY TERMINAL v2.0 | IF · OC-SVM · AE · LOF</span>
+    <span id="statusRight">REFRESH: 60s | SOURCE: YAHOO FINANCE</span>
+  </div>
+
+  <!-- ═══════════════════════════════════════════
+       JAVASCRIPT — ALL API-CONNECTED, NO MOCK DATA
+       ═══════════════════════════════════════════ -->
+  <script>
+    // ── STATE ──
+    let UNIVERSE = [];
+    let currentStock = null;
+    let chartInstance = null;
+    let selectedIndex = -1;
+
+    // ── HELPERS ──
+    function fmtPrice(n) {
+      if (n == null || isNaN(n)) return '—';
+      return '₹' + Number(n).toLocaleString('en-IN', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      });
+    }
+
+    function isUp(chg) {
+      return String(chg || '').startsWith('+');
+    }
+
+    function chgClass(chg) {
+      if (!chg || chg === '—') return '';
+      return isUp(chg) ? 'up' : 'dn';
+    }
+
+    // ── CLOCK ──
+    function updateClock() {
+      const now = new Date();
+      const ist = now.toLocaleString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+      });
+      document.getElementById('clockDisplay').textContent = ist + ' IST';
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // ── DATA LOADING ──
+    async function loadData() {
+      try {
+        const [uniRes, statRes] = await Promise.all([
+          fetch('/api/universe'),
+          fetch('/api/status'),
+        ]);
+        const uni = await uniRes.json();
+        const stat = await statRes.json();
+
+        if (uni.status === 'success' && uni.data.length > 0) {
+          UNIVERSE = uni.data;
+          const anomCount = UNIVERSE.filter(s => s.isAnomaly).length;
+          document.getElementById('stockCount').textContent = UNIVERSE.length;
+          document.getElementById('connStatus').innerHTML =
+            `<span class="ok">ONLINE</span> · ${anomCount} ANOMALIES`;
+          document.getElementById('statusRight').textContent =
+            `QUOTES: ${stat.quotesLoaded}/${stat.stocks} | PIPELINE: ${stat.hasPipelineResults ? 'LOADED' : 'CACHED'} | REFRESH: 60s`;
+
+          renderTicker();
+          renderStockList();
+
+          // Auto-select: keep current or pick first anomaly
+          if (currentStock) {
+            const updated = UNIVERSE.find(s => s.ticker === currentStock.ticker);
+            if (updated) selectStock(updated.ticker, false);
+          } else {
+            const first = UNIVERSE.find(s => s.isAnomaly) || UNIVERSE[0];
+            if (first) selectStock(first.ticker, true);
+          }
+        } else {
+          document.getElementById('connStatus').innerHTML =
+            '<span class="err">NO DATA</span>';
+          document.getElementById('stockList').innerHTML =
+            '<div class="empty-msg">No data available.<br>Run <strong>python main.py --fetch-fresh</strong> to fetch daily data,<br>then restart the API server.</div>';
+        }
+      } catch (err) {
+        console.error('Load failed:', err);
+        document.getElementById('connStatus').innerHTML =
+          '<span class="err">API OFFLINE</span>';
+        document.getElementById('stockList').innerHTML =
+          '<div class="empty-msg">Cannot reach API server.<br>Run <strong>python api.py</strong> first.</div>';
+      }
+    }
+
+    // ── TICKER TAPE ──
+    function renderTicker() {
+      const el = document.getElementById('tickerTape');
+      // Duplicate for seamless scroll loop
+      const items = [...UNIVERSE, ...UNIVERSE];
+      el.innerHTML = items.map(s => {
+        const cls = chgClass(s.chg);
+        const liveTag = s.isLive ? 'LIVE' : 'LAST';
+        const flagHtml = s.isAnomaly ? ' <span class="flag">!</span>' : '';
+        return `<span class="tape-item">` +
+          `<span class="sym">${s.name}</span> ` +
+          `<span class="px">${fmtPrice(s.price)}</span> ` +
+          `<span class="${cls}">${s.chg || '—'}</span>` +
+          `${flagHtml} ` +
+          `<span class="ts">[${liveTag} ${s.priceAsOf || '—'}]</span>` +
+        `</span>`;
+      }).join('');
+    }
+
+    // ── STOCK LIST ──
+    function getFilteredSorted() {
+      const q = document.getElementById('searchInput').value.toLowerCase();
+      const sortMode = document.getElementById('sortSelect').value;
+      
+      let list = [...UNIVERSE].filter(s => s.ticker.toLowerCase().includes(q) || (s.name || '').toLowerCase().includes(q));
+      
+      list.sort((a, b) => {
+        if (sortMode === 'anomaly') {
+          return (b.isAnomaly - a.isAnomaly) || a.ticker.localeCompare(b.ticker);
+        } else if (sortMode === 'buyDesc') {
+          const sA = a.buyScore !== undefined ? a.buyScore : -1;
+          const sB = b.buyScore !== undefined ? b.buyScore : -1;
+          return sB - sA || (b.isAnomaly - a.isAnomaly) || a.ticker.localeCompare(b.ticker);
+        } else if (sortMode === 'buyAsc') {
+          const sA = a.buyScore !== undefined ? a.buyScore : 100;
+          const sB = b.buyScore !== undefined ? b.buyScore : 100;
+          return sA - sB || (b.isAnomaly - a.isAnomaly) || a.ticker.localeCompare(b.ticker);
+        } else {
+          return a.ticker.localeCompare(b.ticker);
+        }
+      });
+      return list;
+    }
+
+    function renderStockList() {
+      const list = getFilteredSorted();
+      const html = list.map(s => {
+        const active = currentStock && currentStock.ticker === s.ticker ? 'active' : '';
+        const anom = s.isAnomaly ? 'anomaly' : '';
+        const cls = chgClass(s.chg);
+        const liveTag = s.isLive ? 'LIVE' : 'LAST';
+        const flagHtml = s.isAnomaly ? '<span class="flag">▲</span>' : '';
+
+        let bScoreHtml = '';
+        if (s.buyScore !== undefined) {
+          const color = s.buyScore >= 8 ? 'var(--green)' : (s.buyScore <= 3 ? 'var(--red)' : 'var(--amber)');
+          bScoreHtml = `<span style="color:${color}; font-size:9px; margin-left:4px;">[${s.buyScore}/10]</span>`;
+        }
+
+        return `<div class="stock-row ${active} ${anom}" onclick="selectStock('${s.ticker}')">
+          <div class="row-left">
+            <div class="sym">${s.name}${flagHtml}${bScoreHtml}</div>
+            <div class="sub">${s.sector || '—'}</div>
+          </div>
+          <div class="row-right">
+            <div class="px ${cls}">${fmtPrice(s.price)}</div>
+            <div class="chg ${cls}">${s.chg || '—'}</div>
+            <span class="asof">[${liveTag} ${s.priceAsOf || '—'}]</span>
+          </div>
+        </div>`;
+      }).join('');
+
+      document.getElementById('stockList').innerHTML = html ||
+        '<div class="empty-msg">No matches.</div>';
+
+      // Update selected index for keyboard nav
+      if (currentStock) {
+        selectedIndex = list.findIndex(s => s.ticker === currentStock.ticker);
+      }
+    }
+
+    // ── SELECT STOCK ──
+    async function selectStock(ticker, reloadChart = true) {
+      currentStock = UNIVERSE.find(s => s.ticker === ticker);
+      if (!currentStock) return;
+      renderStockList();
+
+      const cls = chgClass(currentStock.chg);
+
+      // Ticker & sector
+      document.getElementById('activeTicker').textContent = currentStock.ticker;
+      document.getElementById('activeSector').textContent = currentStock.sector || '';
+
+      // Anomaly tag
+      const tagEl = document.getElementById('anomalyTag');
+      if (currentStock.isAnomaly) {
+        tagEl.innerHTML = '<span class="anomaly-tag">ANOMALY</span>';
+      } else {
+        tagEl.innerHTML = '';
+      }
+
+      // Price
+      document.getElementById('activePrice').textContent = fmtPrice(currentStock.price);
+      document.getElementById('activePrice').className = 'price-main ' + cls;
+      document.getElementById('activePriceChg').textContent = currentStock.chg || '';
+      document.getElementById('activePriceChg').className = 'price-change ' + cls;
+
+      // Price as-of with live badge
+      const liveBadge = currentStock.isLive
+        ? '<span class="live-badge on">LIVE</span>'
+        : '<span class="live-badge off">LAST</span>';
+      document.getElementById('activePriceAsOf').innerHTML =
+        `[price as of <em>${currentStock.priceAsOf || '—'}</em>] ${liveBadge}`;
+
+      // Stats
+      document.getElementById('activeChg').textContent = currentStock.chg || '—';
+      document.getElementById('activeChg').className = 'val ' + cls;
+      document.getElementById('activeDelivery').textContent =
+        currentStock.deliveryPct ? currentStock.deliveryPct + '%' : '—';
+      document.getElementById('activeConsensus').textContent =
+        (currentStock.agreementCount || 0) + ' / 4';
+      document.getElementById('activeConsensus').className =
+        'val ' + (currentStock.isAnomaly ? 'dn' : 'up');
+      let bScoreCls = 'val ';
+      if (currentStock.buyScore >= 8) bScoreCls += 'up';
+      else if (currentStock.buyScore <= 3) bScoreCls += 'dn';
+      else bScoreCls += 'amber';
+      document.getElementById('activeScore').textContent =
+        currentStock.buyScore !== undefined ? currentStock.buyScore + ' / 10' : '—';
+      document.getElementById('activeScore').className = bScoreCls;
+
+      // Chart label
+      document.getElementById('chartLabel').textContent =
+        `${currentStock.ticker} — CLOSE — 90 DAYS`;
+
+      // Load chart and analysis
+      if (reloadChart) await loadChart(ticker);
+      await loadAnalysis(ticker);
+    }
+
+    // ── CHART ──
+    async function loadChart(ticker) {
+      const ctx = document.getElementById('mainChart').getContext('2d');
+      if (chartInstance) chartInstance.destroy();
+
+      try {
+        const res = await fetch(`/api/history/${ticker}?days=90`);
+        const json = await res.json();
+        if (json.status !== 'success') throw new Error('no data');
+
+        const isAnom = currentStock && currentStock.isAnomaly;
+        const lineColor = isAnom ? '#ff3333' : (isUp(currentStock.chg) ? '#00cc66' : '#ff9900');
+        const fillColor = isAnom ? 'rgba(255, 51, 51, 0.04)' : 'rgba(255, 153, 0, 0.04)';
+
+        chartInstance = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: json.dates,
+            datasets: [{
+              label: 'Close',
+              data: json.closes,
+              borderColor: lineColor,
+              backgroundColor: fillColor,
+              borderWidth: 1.5,
+              fill: true,
+              pointRadius: 0,
+              pointHoverRadius: 4,
+              pointHoverBackgroundColor: lineColor,
+              tension: 0.1,
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 300 },
+            interaction: {
+              intersect: false,
+              mode: 'index'
+            },
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                backgroundColor: '#111',
+                titleFont: { family: 'IBM Plex Mono', size: 11 },
+                bodyFont: { family: 'IBM Plex Mono', size: 11 },
+                titleColor: '#ff9900',
+                bodyColor: '#b0b0b0',
+                borderColor: '#333',
+                borderWidth: 1,
+                padding: 8,
+                displayColors: false,
+                callbacks: {
+                  label: function(ctx) {
+                    return '₹' + Number(ctx.parsed.y).toLocaleString('en-IN', {
+                      minimumFractionDigits: 2
+                    });
+                  }
+                }
+              }
+            },
+            scales: {
+              x: {
+                grid: { color: '#111', lineWidth: 0.5 },
+                ticks: {
+                  color: '#555',
+                  maxTicksLimit: 10,
+                  font: { family: 'IBM Plex Mono', size: 9 },
+                  maxRotation: 0
+                },
+                border: { color: '#222' }
+              },
+              y: {
+                grid: { color: '#111', lineWidth: 0.5 },
+                ticks: {
+                  color: '#555',
+                  font: { family: 'IBM Plex Mono', size: 9 },
+                  callback: function(val) {
+                    return '₹' + Number(val).toLocaleString('en-IN');
+                  }
+                },
+                border: { color: '#222' }
+              }
+            }
+          }
+        });
+      } catch (e) {
+        console.error('Chart load failed:', e);
+        // Show empty chart
+        chartInstance = new Chart(ctx, {
+          type: 'line',
+          data: { labels: ['No data'], datasets: [{ data: [0], borderColor: '#333', pointRadius: 0 }] },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { grid: { color: '#111' }, ticks: { color: '#555' } },
+              y: { grid: { color: '#111' }, ticks: { color: '#555' } }
+            }
+          }
+        });
+      }
+    }
+
+    // ── RIGHT PANEL: ANOMALY ANALYSIS ──
+    async function loadAnalysis(ticker) {
+      const panel = document.getElementById('rightPanel');
+
+      if (!currentStock || !currentStock.isAnomaly) {
+        // Normal stock — show clean status
+        panel.innerHTML = `
+          <div class="right-section">
+            <div class="alert-box ok">
+              <h4>NORMAL — NO ANOMALY DETECTED</h4>
+              <p class="normal-msg">
+                4-model ensemble (Isolation Forest · One-Class SVM · Autoencoder · LOF)
+                found no structural deviation in price action, volume profile, or delivery
+                percentage vs historical baseline.
+              </p>
+            </div>
+          </div>
+          <div class="right-section">
+            <h4>MODEL STATUS</h4>
+            <div class="model-grid">
+              <div class="model-cell clean"><div class="m-name">ISOLATION FOREST</div><div class="m-status up">CLEAN</div></div>
+              <div class="model-cell clean"><div class="m-name">OC-SVM</div><div class="m-status up">CLEAN</div></div>
+              <div class="model-cell clean"><div class="m-name">AUTOENCODER</div><div class="m-status up">CLEAN</div></div>
+              <div class="model-cell clean"><div class="m-name">LOF</div><div class="m-status up">CLEAN</div></div>
+            </div>
+          </div>
+          <div class="right-section">
+            <h4>TECHNICAL AI BUY SCORE: ${currentStock.buyLabel || 'HOLD'}</h4>
+            <p class="normal-msg">${currentStock.buyReason || 'No technical data available.'}</p>
+          </div>`;
+        return;
+      }
+
+      // Anomaly stock — load detailed analysis
+      let explainHtml = '';
+      let featHtml = '';
+      let sebiHtml = '';
+
+      try {
+        const res = await fetch(`/api/anomalies/${ticker}`);
+        const json = await res.json();
+
+        if (json.status === 'success') {
+          const data = json.data;
+
+          // Explanations
+          if (data.explanations && data.explanations.length) {
+            explainHtml = `<ul class="explain-list">${data.explanations.map(e =>
+              `<li>${e}</li>`).join('')}</ul>`;
+          }
+
+          // Feature values
+          if (data.feature_values) {
+            featHtml = Object.entries(data.feature_values).map(([k, v]) =>
+              `<div class="feat-cell"><div class="fl">${k}</div><div class="fv">${v}</div></div>`
+            ).join('');
+          }
+        }
+      } catch (e) {
+        console.error('Analysis load failed:', e);
+      }
+
+      // SEBI ground truth
+      if (currentStock.sebiOrder) {
+        sebiHtml = `
+          <div class="right-section">
+            <div class="sebi-box">
+              <div class="st">SEBI GROUND TRUTH</div>
+              <div class="st-body">${currentStock.sebiOrder}</div>
+            </div>
+          </div>`;
+      }
+
+      // Build model cards — show agreement count
+      const agreeCount = currentStock.agreementCount || 0;
+      const models = ['ISOLATION FOREST', 'OC-SVM', 'AUTOENCODER', 'LOF'];
+      const modelCardsHtml = models.map((name, i) => {
+        // If we have agreement info, flag models up to agreeCount
+        const isFlagged = i < agreeCount;
+        const cellClass = isFlagged ? 'flagged' : 'clean';
+        const statusText = isFlagged ? 'FLAGGED' : 'CLEAN';
+        const statusClass = isFlagged ? 'dn' : 'up';
+        return `<div class="model-cell ${cellClass}">` +
+          `<div class="m-name">${name}</div>` +
+          `<div class="m-status ${statusClass}">${statusText}</div></div>`;
+      }).join('');
+
+      panel.innerHTML = `
+        <div class="right-section">
+          <div class="alert-box warn">
+            <h4>⚠ MANIPULATION ALERT — ${agreeCount}/4 MODELS AGREE</h4>
+            ${explainHtml || '<p class="normal-msg">Complex multi-dimensional anomaly detected.</p>'}
+          </div>
+        </div>
+        <div class="right-section">
+          <h4>MODEL AGREEMENT</h4>
+          <div class="model-grid">${modelCardsHtml}</div>
+        </div>
+        </div>
+        ${featHtml ? `<div class="right-section"><h4>FEATURE VALUES</h4><div class="feat-grid">${featHtml}</div></div>` : ''}
+        ${sebiHtml}
+        <div class="right-section">
+          <h4>TECHNICAL AI BUY SCORE: ${currentStock.buyLabel || 'HOLD'}</h4>
+          <p class="normal-msg">${currentStock.buyReason || 'No technical data available.'}</p>
+        </div>`;
+    }
+
+    // ── KEYBOARD NAVIGATION ──
+    document.addEventListener('keydown', (e) => {
+      const list = getFilteredSorted();
+      if (!list.length) return;
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        selectedIndex = Math.min(selectedIndex + 1, list.length - 1);
+        selectStock(list[selectedIndex].ticker);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        selectedIndex = Math.max(selectedIndex - 1, 0);
+        selectStock(list[selectedIndex].ticker);
+      } else if (e.key === 'r' && !e.ctrlKey && !e.metaKey) {
+        // Don't intercept if search box is focused
+        if (document.activeElement === document.getElementById('searchInput')) return;
+        // Manual refresh
+        loadData();
+      }
+    });
+
+    // Don't hijack keyboard when typing in search
+    document.getElementById('searchInput').addEventListener('keydown', (e) => {
+      e.stopPropagation();
+    });
+
+    // ── INIT ──
+    loadData();
+    setInterval(loadData, 60000);
+  </script>
+</body>
+</html>
