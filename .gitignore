@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Trained models and generated artifacts (rebuild with training/train.py)
+results/models/
+results/metrics/
+results/figures/
+results/tables/
+
+# Built feature panel (rebuild with data/build_panel.py)
+data/features/
+
+# OS
+.DS_Store
+Thumbs.db

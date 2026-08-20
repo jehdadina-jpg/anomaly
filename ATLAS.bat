@@ -1,32 +1,42 @@
 @echo off
-title Anomaly Terminal Server
-color 0A
-
-echo =======================================================
-echo          STARTING ANOMALY DETECTION TERMINAL           
-echo =======================================================
-echo.
-echo The terminal server is booting up...
-echo It will fetch the latest market quotes and then automatically 
-echo open your default web browser to the terminal interface.
-echo.
-echo IMPORTANT: Leave this black window open while using the terminal!
-echo Closing this window will shut down the live data feed.
+title ATLAS - AI Trading and Analysis System
+cls
+echo ========================================
+echo    ATLAS - AI Trading Analysis System
+echo ========================================
 echo.
 
-:: Check if python is installed
-python --version >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [ERROR] Python was not found on your system!
-    echo Please make sure Python is installed and added to your system PATH.
-    pause
-    exit /b
+cd /d "%~dp0"
+
+REM Build the data panel if missing (joins OHLCV with NSE bhavcopy)
+if not exist "data\features\panel.csv" (
+    echo [SETUP] Building data panel...
+    python -m data.build_panel
+    if errorlevel 1 (
+        echo ERROR: Panel build failed
+        pause
+        exit /b 1
+    )
+    echo.
 )
 
-:: Run the backend server
-python api.py
+REM Train the prediction model if missing
+if not exist "results\models\prediction\lgbm_ensemble.pkl" (
+    echo [SETUP] First time setup - training prediction model...
+    echo         Runs walk-forward validation; takes a few minutes.
+    echo.
+    python -m training.train
+    if errorlevel 1 (
+        echo ERROR: Model training failed
+        pause
+        exit /b 1
+    )
+    echo.
+)
 
-:: If the server crashes or closes, pause so the user can read the error
+echo [LAUNCH] Starting ATLAS API server...
 echo.
-echo The server has stopped.
-pause
+echo Access the terminal at: http://localhost:8001
+echo Press Ctrl+C to stop the server
+echo.
+python api.py

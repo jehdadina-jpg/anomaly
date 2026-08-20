@@ -33,6 +33,8 @@ STATE = {
     "universe": [],
     "anomalies": {},
     "quotes": {},
+    "predictions": {},      # ticker -> buyScore / buyLabel / buyReason / signals
+    "prediction_meta": {},  # as-of date, horizon, model provenance
     "last_updated": None,
 }
 
@@ -260,93 +262,25 @@ def _quote_from_ticker_obj(ticker: str, t: yf.Ticker) -> dict | None:
         except Exception as exc:
             logger.debug("info dict failed for %s: %s", ticker, exc)
 
-    # --- Attempt 3: Recent history fallback & Buy Score Computation ---
-    hist = None
-    buy_score = 5
-    buy_label = "HOLD"
-    buy_reason = "Neutral technicals."
-    try:
-        hist = t.history(period="30d", interval="1d", auto_adjust=True)
-    except Exception:
-        pass
+    # --- Attempt 3: recent history, purely as a price fallback ---
+    # Buy scores are NOT computed here. They come from the cross-sectional
+    # model, which scores the whole universe at once (see models.predictor);
+    # a per-stock score would have no meaning for a relative target.
+    if price is None or prior_close is None or as_of is None:
+        try:
+            hist = t.history(period="5d", interval="1d", auto_adjust=True)
+        except Exception:
+            hist = None
 
-    if hist is not None and not hist.empty:
-        last_row = hist.iloc[-1]
-        if price is None:
-            price = _safe_float(last_row["Close"])
-        if as_of is None:
-            as_of = hist.index[-1].to_pydatetime()
-        if prior_close is None and len(hist) >= 2:
-            prior_close = _safe_float(hist.iloc[-2]["Close"])
-        elif prior_close is None:
-            prior_close = _safe_float(last_row.get("Open", last_row["Close"]))
-            
-        # --- Compute Technical AI Buy Score ---
-        closes = hist["Close"]
-        if len(closes) >= 20:
-            sma_20 = closes.rolling(20).mean().iloc[-1]
-            current_px = closes.iloc[-1]
-            
-            # Simplified RSI (14 period)
-            delta = closes.diff()
-            gain = (delta.where(delta > 0, 0)).rolling(14).mean().iloc[-1]
-            loss = (-delta.where(delta < 0, 0)).rolling(14).mean().iloc[-1]
-            rs = gain / loss if loss > 0 else 100
-            rsi = 100 - (100 / (1 + rs)) if (1 + rs) != 0 else 50
-            
-            score = 0
-            reasons = []
-            
-            if current_px > sma_20 * 1.05:
-                score += 4
-                reasons.append("Strong uptrend (>5% above 20-SMA)")
-            elif current_px > sma_20:
-                score += 2
-                reasons.append("Uptrend (Above 20-SMA)")
-            else:
-                score -= 2
-                reasons.append("Downtrend (Below 20-SMA)")
-                
-            if pd.notna(rsi):
-                if rsi < 30:
-                    score += 4
-                    reasons.append(f"Oversold (RSI = {rsi:.1f})")
-                elif rsi < 45:
-                    score += 2
-                    reasons.append(f"Cooling off (RSI = {rsi:.1f})")
-                elif rsi > 70:
-                    score -= 4
-                    reasons.append(f"Overbought (RSI = {rsi:.1f})")
-                else:
-                    score += 1
-                    reasons.append(f"Neutral momentum (RSI = {rsi:.1f})")
-                
-            # Volume momentum
-            if "Volume" in hist.columns:
-                vols = hist["Volume"]
-                avg_vol = vols.rolling(20).mean().iloc[-1]
-                curr_vol = vols.iloc[-1]
-                if pd.notna(curr_vol) and pd.notna(avg_vol) and avg_vol > 0:
-                    if curr_vol > avg_vol * 1.5:
-                        score += 2
-                        reasons.append("High volume buying")
-                    elif curr_vol < avg_vol * 0.5:
-                        score -= 1
-                        reasons.append("Low volume")
-                        
-            # Normalize to 0-10
-            buy_score = int(max(0, min(10, score + 5)))
-            buy_reason = ", ".join(reasons)
-            if buy_score >= 8:
-                buy_label = "STRONG BUY"
-            elif buy_score >= 6:
-                buy_label = "BUY"
-            elif buy_score >= 4:
-                buy_label = "HOLD"
-            elif buy_score >= 2:
-                buy_label = "SELL"
-            else:
-                buy_label = "STRONG SELL"
+        if hist is not None and not hist.empty:
+            last_row = hist.iloc[-1]
+            if price is None:
+                price = _safe_float(last_row["Close"])
+            if as_of is None:
+                as_of = hist.index[-1].to_pydatetime()
+            if prior_close is None:
+                prior_close = (_safe_float(hist.iloc[-2]["Close"]) if len(hist) >= 2
+                               else _safe_float(last_row.get("Open", last_row["Close"])))
 
     if price is None:
         return None
@@ -364,9 +298,6 @@ def _quote_from_ticker_obj(ticker: str, t: yf.Ticker) -> dict | None:
         "priceAsOf": _format_ist(as_of),
         "isLive": is_live,
         "updatedAt": datetime.now(timezone.utc).isoformat(),
-        "buyScore": buy_score,
-        "buyLabel": buy_label,
-        "buyReason": buy_reason
     }
 
 
@@ -427,6 +358,24 @@ def refresh_quotes():
     logger.info("Updated quotes for %d / %d tickers.", len(quotes), len(tickers))
 
 
+def refresh_predictions():
+    """Score the whole universe with the cross-sectional model."""
+    try:
+        from models.predictor import compute_universe_scores
+    except Exception as exc:
+        logger.warning("Predictor unavailable: %s", exc)
+        return
+
+    scores, meta = compute_universe_scores()
+    if scores:
+        STATE["predictions"] = scores
+        STATE["prediction_meta"] = meta
+        logger.info("Predictions ready for %d tickers (as of %s, %dd horizon).",
+                    len(scores), meta.get("asOf"), meta.get("horizonDays") or 0)
+    else:
+        logger.warning("No predictions produced: %s", meta.get("error", "unknown"))
+
+
 def _merge_quotes_into_stock(stock: dict) -> dict:
     out = stock.copy()
     q = STATE["quotes"].get(stock["ticker"])
@@ -436,9 +385,15 @@ def _merge_quotes_into_stock(stock: dict) -> dict:
         out["chg"] = q["chg"]
         out["priceAsOf"] = q["priceAsOf"]
         out["isLive"] = q["isLive"]
-        out["buyScore"] = q.get("buyScore", 5)
-        out["buyLabel"] = q.get("buyLabel", "HOLD")
-        out["buyReason"] = q.get("buyReason", "No data")
+
+    pred = STATE["predictions"].get(stock["ticker"])
+    if pred:
+        out["buyScore"] = pred["buyScore"]
+        out["buyLabel"] = pred["buyLabel"]
+        out["buyReason"] = pred["buyReason"]
+        out["signals"] = pred["signals"]
+        out["predictionAsOf"] = pred["asOf"]
+        out["horizonDays"] = pred["horizonDays"]
     return out
 
 
@@ -457,12 +412,20 @@ import threading
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Automatically open the default web browser after a short delay
-    threading.Timer(1.5, lambda: webbrowser.open("http://127.0.0.1:8001")).start()
-    
+    # Load pipeline results
     load_pipeline_results()
-    refresh_quotes()
+
+    # Score the universe once at startup. Feature construction needs the whole
+    # panel, so this runs in a worker thread to keep startup non-blocking.
+    asyncio.get_running_loop().run_in_executor(None, refresh_predictions)
+
+    # Start background task for live price updates (don't block startup)
     task = asyncio.create_task(fetch_live_prices_loop())
+    
+    # Automatically open the default web browser after a short delay
+    threading.Timer(2.0, lambda: webbrowser.open("http://127.0.0.1:8001")).start()
+    
+    logger.info("Server startup complete. Live price updates running in background.")
     yield
     task.cancel()
 
@@ -485,6 +448,8 @@ def get_status():
         "anomalies": sum(1 for s in STATE["universe"] if s.get("isAnomaly")),
         "lastUpdated": STATE["last_updated"],
         "hasPipelineResults": (config.RESULTS_DIR / "anomaly_results.csv").exists(),
+        "predictionsLoaded": len(STATE["predictions"]),
+        "predictionMeta": STATE["prediction_meta"],
     }
 
 
@@ -560,10 +525,46 @@ def get_price_history(ticker: str, days: int = 90):
     }
 
 
+@app.get("/api/prediction/{ticker}")
+def get_prediction_detail(ticker: str):
+    """Score plus the ranked SHAP signals behind it."""
+    pred = STATE["predictions"].get(ticker)
+    if not pred:
+        return {"status": "not_found",
+                "message": f"No prediction for {ticker}."}
+    return {"status": "success", "data": pred, "meta": STATE["prediction_meta"]}
+
+
+@app.get("/api/model/performance")
+def get_model_performance():
+    """
+    Out-of-sample validation metrics for the live model.
+
+    Served straight from the walk-forward report so the UI can state measured
+    performance rather than a remembered number.
+    """
+    report = config.RESULTS_DIR / "metrics" / "validation_report.json"
+    if not report.exists():
+        return {"status": "not_found",
+                "message": "No validation report. Run: python -m training.train"}
+    import json
+    data = json.loads(report.read_text())
+    return {"status": "success", "data": data, "meta": STATE["prediction_meta"]}
+
+
 @app.post("/api/refresh")
 def force_refresh():
     refresh_quotes()
     return {"status": "success", "quotesLoaded": len(STATE["quotes"])}
+
+
+@app.post("/api/predictions/refresh")
+def force_prediction_refresh():
+    """Recompute universe scores (use after new daily data lands)."""
+    refresh_predictions()
+    return {"status": "success",
+            "predictions": len(STATE["predictions"]),
+            "meta": STATE["prediction_meta"]}
 
 
 app.mount("/static", StaticFiles(directory="web", html=True), name="web")
