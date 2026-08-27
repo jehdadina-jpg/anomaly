@@ -299,7 +299,69 @@ Portfolio detail (3-day rebalance, ~4.1 years): 39.2% annualised gross vs
 drawdown −16.1%. By quarter: profitable in 15 of 18, beat the market in 13
 of 18. Worst quarter was 2026Q1 at −11.0%, when the market fell 11.6%.
 
-## 8. Where the ceiling actually is
+## 8. The holding period is worth more than the model
+
+The single most consequential result in this document, and it is not about
+the model at all.
+
+The model is *trained* on a 3-day target because that is where ranking signal
+peaks (§3). That says nothing about how long to *hold*. Holding is a separate
+decision, governed by turnover. Measured on the top-decile book,
+2022-06 to 2026-07:
+
+| Hold | Rebalances | Win rate | Gross | **Net @10bps** | Net @20bps | Sharpe | Max DD |
+|---|---|---|---|---|---|---|---|
+| 1 day | 1,025 | 53.0% | +270.0% | **−93.9%** | −99.9% | 2.00 | −20.9% |
+| 3 days *(what the UI implied)* | 341 | 56.1% | +283.0% | **−1.9%** | −75.0% | 1.88 | −16.1% |
+| 7 days | 146 | 57.3% | +163.9% | +47.5% | −17.7% | 1.46 | −15.5% |
+| 15 days | 68 | 60.6% | +132.0% | +77.2% | +35.2% | 1.40 | −13.7% |
+| **30 days** | 34 | **65.3%** | +158.7% | **+126.6%** | **+98.3%** | 1.57 | **−8.7%** |
+
+Same model, same scores, same universe. Only the holding period changes.
+Moving from a 3-day to a 30-day hold takes net return from **−1.9% to
++126.6%**, raises the win rate from 56.1% to **65.3%**, and roughly halves
+max drawdown (−16.1% → −8.7%). For reference, equal-weight buy-and-hold over
+the same window returned +96.2% *before* costs.
+
+Note the ordering: the shortest holds look **best gross and worst net**. A
+1-day hold earns +270% gross and loses 93.9% net. Turnover, not signal, is
+the binding constraint on this strategy — which is why every earlier attempt
+to improve the *signal* moved the needle so little.
+
+Statistically, the 30-day result holds up (Newey-West t = 3.42 on 34
+rebalances), but two caveats matter:
+
+- **34 rebalances is a thin sample.** The win rate and Sharpe carry wide
+  confidence intervals; treat 65.3% as "materially better than 56%", not as
+  a precise number.
+- **Essentially all of the edge came in the bull half.** Split by regime,
+  the 30-day book returned **+87.1% net in half A** (market +90%) and
+  **−5.1% in half B** (market +3%). It does not manufacture returns in a
+  flat market; it stops costs from destroying them in a rising one.
+
+Implemented as `models.predictor.RECOMMENDED_HOLD_DAYS = 30`, surfaced on
+every prediction as `recommendedHoldDays` alongside the (different)
+`horizonDays`. Reproduce the table with
+`python -m evaluation.score_backtest`.
+
+### A conviction filter that passed per-trade and failed as a portfolio
+
+Filtering the top decile down to only high-delivery, volume-confirmed names
+raised the per-trade win rate consistently, and the lift replicated on an
+untouched validation half (+2.6% on the derivation half, +4.1% on the
+validation half). It looked like a clean win.
+
+As an actual portfolio it was worse: **+26.7% gross / +1.7% net against
++119.2% / +46.1%** for the unfiltered decile at the same 10-day hold, with
+Sharpe falling 1.19 → 0.62 and drawdown worsening −13.0% → −22.0%. The filter
+cuts the book from ~5 names a day to ~0.9, and the resulting concentration
+costs more in variance than the higher hit rate returns. Rejected.
+
+This is the same lesson as the regime filter in §9, arriving by a different
+route: **a per-trade accuracy metric will happily recommend a worse
+portfolio.** Both were caught only by backtesting the full book.
+
+## 9. Where the modelling ceiling is
 
 Short version: **the model is at a local optimum for this data.** Sixteen
 distinct techniques have now been measured against the shipped configuration
@@ -389,7 +451,7 @@ particularly informative in Indian markets, where derivatives volume dwarfs
 cash volume. Intraday bars (`data/fetch_intraday.py`, also never run) are the
 second candidate.
 
-## 9. A beta-neutralization attempt, and why it was reverted
+## 10. A beta-neutralization attempt, and why it was reverted
 
 §7 found the shipped model's top decile ran a beta of ~1.04 against ~0.93 for
 the bottom decile — some of its apparent edge was amplified market exposure,
@@ -466,7 +528,7 @@ leak was in a post-processing step applied across the whole test block. The
 check that caught it was simply running the real production pipeline and
 noticing the number went *down*.
 
-## 10. Methodology
+## 11. Methodology
 
 - **Purged walk-forward.** Six expanding-window folds. The last `horizon`
   days of every training window are dropped, because those rows' forward
@@ -486,7 +548,7 @@ noticing the number went *down*.
 - **Scores are relative.** A score of 10 means "top of this universe today",
   not "will go up 10%".
 
-## 11. Honest summary
+## 12. Honest summary
 
 The signal is **real and statistically significant even after correcting for
 autocorrelation and the number of configurations tried** (rank IC 0.0336,

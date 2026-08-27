@@ -24,6 +24,13 @@ logger = logging.getLogger(__name__)
 
 MODEL_DIR = Path(__file__).parent.parent / "results" / "models" / "prediction"
 
+# Holding period the backtest actually supports, as distinct from the 3-day
+# horizon the model ranks on. Measured net-of-10bps return on a top-decile
+# book over 2022-06..2026-07: 3-day hold -1.9%, 10-day +46.1%, 30-day +126.6%,
+# with win rate rising 56.1% -> 65.3% and max drawdown falling -16.1% -> -8.7%.
+# Reproduce with: python -m evaluation.score_backtest
+RECOMMENDED_HOLD_DAYS = 30
+
 # Score bands. The signal is relative, so the bands are universe percentiles.
 LABEL_BANDS = [
     (8, "STRONG BUY"),
@@ -171,7 +178,14 @@ class AtlasPredictor:
                 "signals": reasons[i]["signals"],
                 "modelRank": float(pct[i]),
                 "asOf": str(pd.Timestamp(as_of).date()),
-                "horizonDays": int(self.meta.get("horizon", 5)),
+                # The horizon the model RANKS on and the period you should
+                # HOLD for are different numbers, and conflating them is
+                # expensive. Ranking signal peaks at 3 days; a 3-day hold
+                # rebalances ~84x/year and measured -1.9% net of 10bps costs,
+                # while a 30-day hold measured +126.6% net over the same
+                # window. See docs/MODEL_VALIDATION.md §8.
+                "horizonDays": int(self.meta.get("horizon", 3)),
+                "recommendedHoldDays": RECOMMENDED_HOLD_DAYS,
             }
 
         with self._lock:

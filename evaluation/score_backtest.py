@@ -285,6 +285,60 @@ def report_portfolio_vol_scaled(df: pd.DataFrame, h: int = 3):
     print("=" * 78)
 
 
+def report_holding_period_sweep(df: pd.DataFrame):
+    """
+    Net-of-cost return by holding period -- the most consequential result in
+    this file.
+
+    The model is TRAINED on a 3-day target because that is where ranking
+    signal is strongest, but that does not make 3 days the right time to
+    HOLD. Holding is a separate decision governed by turnover: a 3-day hold
+    rebalances 84 times a year and hands most of the edge to costs, while a
+    30-day hold rebalances 8 times and keeps it.
+    """
+    from evaluation.stats import newey_west_tstat
+
+    holds = [1, 2, 3, 5, 7, 10, 15, 20, 30]
+    d = df.copy()
+    d["rk"] = d.groupby("Date")["p"].rank(pct=True)
+
+    # Forward returns for holds beyond those precomputed in load_scored_panel.
+    panel = load_panel()[["Date", "ticker", "Close"]].sort_values(["ticker", "Date"])
+    for h in holds:
+        col = f"fwd_{h}d"
+        if col not in d.columns:
+            panel[col] = panel.groupby("ticker")["Close"].transform(
+                lambda x: x.shift(-h) / x - 1)
+            d = d.merge(panel[["Date", "ticker", col]], on=["Date", "ticker"], how="left")
+
+    print("\n" + "=" * 88)
+    print("HOLDING PERIOD SWEEP  (top-decile book, equal weight)")
+    print("=" * 88)
+    print(f"{'hold':>5s} {'rebals':>7s} {'WIN':>7s} {'gross':>9s} {'net@10bp':>10s} "
+          f"{'net@20bp':>10s} {'Sharpe':>7s} {'maxDD':>7s} {'NW-t':>6s}")
+    for h in holds:
+        col = f"fwd_{h}d"
+        x = d.dropna(subset=[col])
+        rebal = set(np.sort(x["Date"].unique())[::h])
+        held = x[x["Date"].isin(rebal) & (x["rk"] >= 0.90)]
+        per = held.groupby("Date")[col].mean().dropna()
+        if len(per) < 5:
+            continue
+        ppy = 252 / h
+        gross = (1 + per).prod() - 1
+        n10 = (1 + (per - 4 * 10 / 10000)).prod() - 1
+        n20 = (1 + (per - 4 * 20 / 10000)).prod() - 1
+        sharpe = per.mean() / (per.std() + 1e-12) * np.sqrt(ppy)
+        eq = (1 + per).cumprod()
+        dd = (eq / eq.cummax() - 1).min()
+        _, t = newey_west_tstat(per.values, lag=1)
+        print(f"{h:4d}d {len(per):7d} {(held[col] > 0).mean():6.1%} {gross:+9.1%} "
+              f"{n10:+10.1%} {n20:+10.1%} {sharpe:7.2f} {dd:+7.1%} {t:6.2f}")
+    print("=" * 88)
+    print("Short holds look best GROSS and lose worst NET. Turnover, not signal,")
+    print("is the binding constraint on this strategy.")
+
+
 def main():
     df = load_scored_panel()
     print(f"\nOut-of-sample predictions: {len(df):,} rows, "
@@ -299,6 +353,7 @@ def main():
     report_portfolio(df, 3)
     report_portfolio(df, 1)
     report_portfolio_vol_scaled(df, 3)
+    report_holding_period_sweep(df)
 
 
 if __name__ == "__main__":
