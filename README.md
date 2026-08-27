@@ -21,15 +21,28 @@ All figures are out-of-sample, from purged walk-forward validation:
 
 | Metric | Value |
 |---|---|
-| Rank IC | **0.0336** (t = 6.37) |
+| Rank IC | **0.0336** |
+| t-stat (Newey-West, autocorrelation-corrected) | 4.78 |
+| t-stat (deflated for ~26 configs tried) | 2.80 |
 | AUC | 0.5201 |
-| Days with positive IC | 58.8% |
-| Long-short gross (annual) | 25.9% |
-| Long-short Sharpe | 1.46 |
-| Horizon | 3 sessions |
+| Ranking horizon | 3 sessions |
+| **Recommended holding period** | **30 sessions** |
 | Universe | 48 NSE stocks |
 | Training rows | 65,853 |
 | Features | 100 |
+
+**Ranking horizon and holding period are different numbers.** The model ranks
+on a 3-day target because that is where signal peaks, but a 3-day *hold*
+rebalances ~84x/year and measured **−1.9% net** of 10bps costs. A 30-day hold
+measured **+126.6% net**, with win rate rising 56.1% → 65.3% and max drawdown
+falling −16.1% → −8.7%. Turnover, not signal, was the binding constraint.
+
+**How much of this is alpha?** Hedged against the market, very little: a
+dollar-neutral long−short book returns +9.5% over four years at **t = 0.57**,
+i.e. indistinguishable from zero. The long-only strategy beats equal-weight
+buy-and-hold by roughly **6–8 percentage points per half** — a real but modest
+tilt, not market-neutral alpha. Treat this as a long-only strategy that mildly
+outperforms its benchmark, not as an alpha engine.
 
 The previous model, measured the same way, had **no signal at all**: 32.6%
 accuracy against a 38.4% majority-class baseline, and 51.0% directional
@@ -123,6 +136,11 @@ Stated plainly, because they affect how the output should be read:
 
 - **No survivorship correction.** The universe is 48 currently-listed stocks,
   so historical results are optimistic to the extent delisted names are absent.
+- **It is not market-neutral.** Returns are dominated by market exposure; a
+  10/10 score does not protect you in a falling market. In the flat half of
+  the test period the long-only book returned +9.6% against the market's
+  +3.4%, and in down markets the score's edge over the *worst*-rated stocks
+  was under 0.1%.
 - **Transaction costs matter more than the signal.** A daily-rebalanced
   long-short book is gross-profitable and net-negative past ~5bps. The score
   is a ranking signal, not a trading strategy.

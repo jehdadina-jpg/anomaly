@@ -200,7 +200,8 @@ Combining them, measured against each variant's own horizon:
 | h=3, multi-horizon + cutoffs | 0.0318 | 5.86 | 0.5184 | 29.0% | 1.64 |
 | h=5, multi-horizon + cutoffs | 0.0251 | 4.48 | 0.5174 | 18.5% | 0.93 |
 
-The shipped configuration is **rank IC 0.0336, t = 6.37** — a 61% improvement
+The shipped configuration is **rank IC 0.0336** (naive t = 6.37; the
+corrected Newey-West figure is 4.78, see §2) — a 61% improvement
 in signal over the 0.0209 starting point, and significant at any conventional
 threshold. All six folds were positive (0.0138 to 0.0549).
 
@@ -361,7 +362,68 @@ This is the same lesson as the regime filter in §9, arriving by a different
 route: **a per-trade accuracy metric will happily recommend a worse
 portfolio.** Both were caught only by backtesting the full book.
 
-## 9. Where the modelling ceiling is
+## 9. Hedging test: how much of this is actually alpha?
+
+The single most important result in this document, and the least flattering.
+
+Everything up to here measures the strategy *long-only*, which means its
+returns contain both the model's stock selection and plain market exposure.
+Section 8 hinted the second dominates: the book made +87% net in the bull
+half and −5% in the flat half. The clean test is to hedge the market out and
+see what survives.
+
+All books use overlapping 30-day tranches, net of 10bps per leg:
+
+**Full period**
+
+| Book | Net | Ann. | Sharpe | Max DD | NW-t |
+|---|---|---|---|---|---|
+| Long-only top decile | **+117.3%** | +21.0% | 1.40 | −24.1% | 2.77 |
+| Market (equal-weight, no cost) | +97.2% | +18.2% | 1.30 | −22.3% | 2.58 |
+| Long−short (dollar neutral) | +9.5% | +2.2% | 0.28 | −14.8% | **0.57** |
+| Long−short (beta neutral) | −9.5% | −2.4% | −0.16 | −34.9% | −0.31 |
+| Long − market | −0.9% | −0.2% | −0.01 | −8.9% | −0.03 |
+
+**Split by regime**
+
+| Book | Half A (bull) | Half B (flat) |
+|---|---|---|
+| Long-only top decile | +98.3% | +9.6% |
+| Market | +90.8% | +3.4% |
+| **Excess over market** | **+7.5pp** | **+6.2pp** |
+| Long−short (dollar neutral) | −8.1% | +19.1% |
+
+Read the hedged rows carefully. **Once market exposure is removed, almost
+nothing is left.** Dollar-neutral long−short returns +9.5% over four years
+with a t-statistic of **0.57** — statistically indistinguishable from zero.
+Beta-neutral is negative. Long-minus-market is exactly zero.
+
+The long-only book beats the market by roughly **6–8 percentage points in
+each half** — a real but modest tilt, not an alpha engine. Its headline
++117% comes overwhelmingly from being long a market that rose 97%.
+
+This does not contradict the rank IC of 0.0336 (t = 4.78). Both are true: the
+model genuinely ranks stocks better than chance, and that ranking edge is too
+small to survive hedging and costs as standalone alpha. A rank IC in the
+0.03 range is a weak signal — strong enough to measure, not strong enough to
+build a market-neutral book on.
+
+One suggestive detail: the dollar-neutral book was the *best* performer in
+the flat half (+19.1%, Sharpe 0.92) while the long-only book stalled. The
+sign is right for "hedging helps when there is no market to ride", but at
+t = 1.27 it is not significant, and finding it after the fact in one of two
+halves is exactly the kind of result this project has already been burned by
+twice. Not actioned.
+
+### What to call this strategy honestly
+
+It is a **long-only equity strategy that mildly outperforms its benchmark**,
+whose main practical virtue is the holding-period fix in §8 (which stops
+costs from destroying the tilt). It is not market-neutral alpha, and the buy
+score should not be presented as though holding a 10/10 name protects you
+from a falling market — §7 shows it does not.
+
+## 10. Where the modelling ceiling is
 
 Short version: **the model is at a local optimum for this data.** Sixteen
 distinct techniques have now been measured against the shipped configuration
@@ -451,7 +513,7 @@ particularly informative in Indian markets, where derivatives volume dwarfs
 cash volume. Intraday bars (`data/fetch_intraday.py`, also never run) are the
 second candidate.
 
-## 10. A beta-neutralization attempt, and why it was reverted
+## 11. A beta-neutralization attempt, and why it was reverted
 
 §7 found the shipped model's top decile ran a beta of ~1.04 against ~0.93 for
 the bottom decile — some of its apparent edge was amplified market exposure,
@@ -528,7 +590,7 @@ leak was in a post-processing step applied across the whole test block. The
 check that caught it was simply running the real production pipeline and
 noticing the number went *down*.
 
-## 11. Methodology
+## 12. Methodology
 
 - **Purged walk-forward.** Six expanding-window folds. The last `horizon`
   days of every training window are dropped, because those rows' forward
@@ -548,10 +610,41 @@ noticing the number went *down*.
 - **Scores are relative.** A score of 10 means "top of this universe today",
   not "will go up 10%".
 
-## 12. Honest summary
+## 13. Honest summary
 
-The signal is **real and statistically significant even after correcting for
-autocorrelation and the number of configurations tried** (rank IC 0.0336,
-Newey-West t = 4.78, deflated t = 2.80), but it remains **small**, which is what a genuine edge in liquid large-cap
-equities looks like. Anyone reporting 60%+ directional accuracy on daily
-equity prediction is measuring something other than what they think.
+**The ranking signal is real.** Rank IC 0.0336, Newey-West t = 4.78, deflated
+to t = 2.80 after accounting for the ~26 configurations compared. It survives
+autocorrelation correction and a multiple-testing haircut. The model does
+order stocks better than chance.
+
+**The signal is small, and smaller than it looks.** Hedged against the market
+it produces nothing statistically distinguishable from zero (§9: dollar-neutral
+long−short returns +9.5% over four years at t = 0.57). The long-only
+strategy's headline +117% is mostly a market that rose 97%. Genuine excess is
+roughly **6–8 percentage points per half** — real, modest, and not
+market-neutral alpha.
+
+**The most valuable finding had nothing to do with the model.** Holding for
+30 days instead of 3 moved net return from −1.9% to +126.6% and win rate from
+56.1% to 65.3% (§8), because turnover — not signal — was the binding
+constraint. Every one of the ~20 attempts to improve the *signal* was neutral
+or negative; the one change to *how the signal is used* was worth more than
+all of them combined.
+
+**What would actually move this further** is more microstructure data, not
+more modelling (§10). Removing NSE delivery features costs 21% of the signal,
+while doubling price history changes nothing. F&O open interest is the
+obvious next input; `data/fetch_fo_data.py` targets a dead NSE endpoint and
+would need rewriting.
+
+**Three near-misses were caught only by full-book backtesting**, each of
+which looked like a clean win first: beta neutralization (§11, +37% in an
+experiment that leaked across the test period), a conviction filter (§8,
+per-trade lift that replicated out-of-sample but produced a worse portfolio),
+and regime filtering (§10, better win rate, half the return). A per-trade or
+per-day metric will cheerfully recommend a worse portfolio. Backtest the
+whole book.
+
+Anyone reporting 60%+ directional accuracy on daily equity prediction is
+measuring something other than what they think — as the first version of this
+model was.
