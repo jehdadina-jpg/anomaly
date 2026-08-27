@@ -140,6 +140,16 @@ class AtlasPredictor:
         X = X.fillna(X.median(numeric_only=True)).fillna(0)
 
         raw = self._raw_scores(X)
+
+        # Beta/sector neutralization was tried and reverted: see
+        # docs/MODEL_VALIDATION.md §8. A per-date regression fit on just this
+        # day's ~48 stocks made rank IC worse (0.0336 -> 0.0237); fitting
+        # fixed coefficients on the training panel instead measured 0.0311,
+        # still below the raw score's 0.0336. Only a version that pools
+        # across the live/test period beat the baseline, and that version
+        # cannot be reproduced by a predictor scoring one day at a time
+        # without leaking future dates' composition into today's score.
+
         # Percentile within today's universe -> 0..10.
         pct = pd.Series(raw).rank(pct=True).values
         scores = np.clip(np.ceil(pct * 10).astype(int), 0, 10)

@@ -40,6 +40,7 @@ from sklearn.metrics import roc_auc_score
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import config
 from data.build_panel import load_panel
+from evaluation.stats import deflated_tstat, newey_west_tstat
 from features.predictive import build_features, feature_columns
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,15 @@ TAIL_QUANTILES = (0.25, 0.35)
 
 N_FOLDS = 6
 SEEDS = (1, 42, 2024)  # averaging several seeds cancels fitting noise
+
+# Roughly how many distinct configurations (horizons, quantiles, feature
+# transforms, universe widths, model families, plus a later round testing
+# sample-uniqueness weighting / winsorization / a linear diversifier /
+# beta-sector neutralization) were compared while arriving at this one. Used
+# only to deflate the reported t-stat for selection bias — see
+# evaluation.stats.deflated_tstat. Update this if you run a fresh round of
+# configuration search; it is a documentation constant, not a tuned one.
+N_TRIALS_SEARCHED = 26
 
 # Deliberately small trees. With this signal-to-noise ratio, capacity buys
 # overfitting; heavier regularisation measured better than deeper trees.
@@ -160,6 +170,8 @@ def walk_forward(df: pd.DataFrame, feats: list[str], horizon: int,
         if not models:
             continue
         p = predict_ensemble(models, df.loc[te_mask, feats])
+        # Beta/sector neutralization tried and reverted here too — see
+        # docs/MODEL_VALIDATION.md §8 and models/predictor.py's comment.
 
         sub = df.loc[te_mask, ["Date", "ticker", fwd_col]].copy()
         sub["p"] = p
@@ -202,7 +214,21 @@ def summarise(scored: pd.DataFrame, horizon: int) -> dict:
                     for _, x in d.groupby("Date") if len(x) >= 10])
     ics = ics[np.isfinite(ics)]
     ic_mean = float(ics.mean())
-    ic_t = float(ic_mean / (ics.std() + 1e-12) * np.sqrt(len(ics)))
+
+    # Naive t-stat treats each day's IC as an independent draw. It is not:
+    # with an h-day forward return, day t and day t+1's IC are computed from
+    # windows that share h-1 days, so the IC series is autocorrelated by
+    # construction. Newey-West (lag = horizon-1) is the correct standard
+    # error; the naive figure is kept only as a labelled point of comparison.
+    naive_t = float(ic_mean / (ics.std() + 1e-12) * np.sqrt(len(ics)))
+    _, nw_t = newey_west_tstat(ics, lag=max(horizon - 1, 1))
+
+    # This configuration (horizon, quantiles, features) was selected as the
+    # best of roughly N_TRIALS_SEARCHED alternatives during development.
+    # Reporting only the winning trial's t-stat overstates confidence in the
+    # same way p-hacking does; this haircut is the honest number.
+    deflated_t = float(deflated_tstat(nw_t, N_TRIALS_SEARCHED))
+    ic_t = nw_t  # kept as the headline field name for backward compatibility
 
     lab = d.dropna(subset=["y"])
     auc = float(roc_auc_score(lab["y"], lab["p"])) if lab["y"].nunique() == 2 else None
@@ -232,7 +258,10 @@ def summarise(scored: pd.DataFrame, horizon: int) -> dict:
         "n_test_rows": int(len(d)),
         "n_test_days": int(d["Date"].nunique()),
         "rank_ic": ic_mean,
-        "rank_ic_tstat": ic_t,
+        "rank_ic_tstat": ic_t,               # Newey-West, HAC-adjusted
+        "rank_ic_tstat_naive": naive_t,       # i.i.d. assumption; overstated
+        "rank_ic_tstat_deflated": deflated_t, # + haircut for ~20 trials searched
+        "n_trials_searched": N_TRIALS_SEARCHED,
         "pct_days_ic_positive": float((ics > 0).mean()),
         "auc": auc,
         "long_short_gross_annual": gross,
@@ -258,8 +287,10 @@ def main(validate: bool = True, horizon: int = HORIZON) -> dict:
     if validate:
         logger.info("Running purged walk-forward validation (%d folds)...", N_FOLDS)
         scored, metrics = walk_forward(df, feats, horizon, N_FOLDS)
-        logger.info("OOS rank IC=%.4f (t=%.2f)  AUC=%s",
-                    metrics["rank_ic"], metrics["rank_ic_tstat"], metrics["auc"])
+        logger.info("OOS rank IC=%.4f  naive-t=%.2f  NW-t=%.2f  deflated-t=%.2f  AUC=%s",
+                    metrics["rank_ic"], metrics["rank_ic_tstat_naive"],
+                    metrics["rank_ic_tstat"], metrics["rank_ic_tstat_deflated"],
+                    metrics["auc"])
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
         scored.to_csv(MODEL_DIR / "walk_forward_predictions.csv", index=False)
 
@@ -278,8 +309,13 @@ def main(validate: bool = True, horizon: int = HORIZON) -> dict:
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "n_train_rows": int(fit_mask.sum()),
         "tickers": sorted(df["ticker"].unique().tolist()),
+        # Beta/sector neutralization was measured and rejected (it lowered
+        # rank IC in every deployable form); scores are the raw ensemble
+        # ranks. See docs/MODEL_VALIDATION.md §8.
+        "beta_sector_neutralized": False,
         "validation": {k: metrics.get(k) for k in
-                       ("rank_ic", "rank_ic_tstat", "auc")} if metrics else None,
+                       ("rank_ic", "rank_ic_tstat", "rank_ic_tstat_naive",
+                        "rank_ic_tstat_deflated", "auc")} if metrics else None,
     }, MODEL_DIR / "model_meta.pkl")
 
     if metrics:
@@ -306,7 +342,13 @@ if __name__ == "__main__":
         print("\n" + "=" * 66)
         print("OUT-OF-SAMPLE VALIDATION")
         print("=" * 66)
-        print(f"  rank IC              {m['rank_ic']:+.4f}  (t={m['rank_ic_tstat']:.2f})")
+        print(f"  rank IC              {m['rank_ic']:+.4f}")
+        print(f"  t-stat (naive)       {m['rank_ic_tstat_naive']:.2f}  "
+              f"<- overstated, ignores IC autocorrelation")
+        print(f"  t-stat (Newey-West)  {m['rank_ic_tstat']:.2f}  "
+              f"<- correct standard error")
+        print(f"  t-stat (deflated)    {m['rank_ic_tstat_deflated']:.2f}  "
+              f"<- + haircut for {m['n_trials_searched']} configs tried")
         print(f"  AUC                  {m['auc']:.4f}")
         print(f"  days with IC > 0     {m['pct_days_ic_positive']:.1%}")
         print(f"  L-S gross annual     {m['long_short_gross_annual']:.1%}")

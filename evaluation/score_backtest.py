@@ -46,13 +46,20 @@ def load_scored_panel() -> pd.DataFrame:
         raise SystemExit(f"No walk-forward predictions at {PRED_PATH}.\n"
                          "Run: python -m training.train")
 
+    from features.predictive import build_features
+
     preds = pd.read_csv(PRED_PATH, parse_dates=["Date"])
-    panel = load_panel()[["Date", "ticker", "Close"]].copy()
+    raw_panel = load_panel()
+    panel = raw_panel[["Date", "ticker", "Close"]].copy()
     panel = panel.sort_values(["ticker", "Date"])
 
     for h in HORIZONS:
         panel[f"fwd_{h}d"] = panel.groupby("ticker")["Close"].transform(
             lambda x: x.shift(-h) / x - 1)
+
+    # vol_20d for inverse-volatility position sizing (see report_portfolio).
+    vol = build_features(raw_panel)[["Date", "ticker", "vol_20d"]]
+    panel = panel.merge(vol, on=["Date", "ticker"], how="left")
 
     df = preds[["Date", "ticker", "p", "fold"]].merge(
         panel, on=["Date", "ticker"], how="left")
@@ -89,6 +96,8 @@ def bucket_table(df: pd.DataFrame, h: int) -> pd.DataFrame:
 
 def report_headline(df: pd.DataFrame):
     """The direct answer: buy 10/10, hold N days."""
+    from evaluation.stats import newey_west_tstat
+
     print("=" * 78)
     print("BUY A 10/10 STOCK, SELL AFTER N DAYS")
     print("=" * 78)
@@ -103,6 +112,23 @@ def report_headline(df: pd.DataFrame):
               f"{d[col].mean():+8.3%} {d[col].median():+7.3%} "
               f"{(d[f'excess_{h}d'] > 0).mean():9.1%} {d[col].min():+7.1%}")
     print("=" * 78)
+
+    # Significance on the average return, not the win rate. Individual
+    # trades are NOT independent observations: several tickers scoring 10/10
+    # on the same day share that day's market move (cross-sectional
+    # correlation), and the same ticker's overlapping forward-return windows
+    # create time-series correlation across nearby dates. Collapsing to one
+    # observation per day and applying a Newey-West correction handles both.
+    print("\nSignificance of the average return (per-day, autocorrelation-aware):")
+    for h in HORIZONS:
+        col = f"fwd_{h}d"
+        daily = df[df["score"] == 10].dropna(subset=[col]).groupby("Date")[col].mean()
+        if len(daily) < 10:
+            continue
+        naive_t = daily.mean() / (daily.std() + 1e-12) * np.sqrt(len(daily))
+        _, nw_t = newey_west_tstat(daily.values, lag=max(h - 1, 1))
+        flag = "" if nw_t > 2 else "  <- does not clear t>2"
+        print(f"  {h:2d}d: naive t={naive_t:5.2f}  Newey-West t={nw_t:5.2f}{flag}")
 
 
 def report_costs(df: pd.DataFrame):
@@ -199,6 +225,63 @@ def report_portfolio(df: pd.DataFrame, h: int = 3):
     net = per - 4 * 10 / 10000
     cum_net = (1 + net).prod() - 1
     print(f"  cumulative net @10bps    {cum_net:+.1%}")
+
+    # Autocorrelation-aware significance. Equal-weighting can accidentally
+    # over-concentrate in a handful of volatile names on any given rebalance;
+    # this doesn't fix that, but the CI at least isn't overstated because of
+    # the horizon-driven autocorrelation these returns inherit from the score.
+    from evaluation.stats import newey_west_tstat
+    _, nw_t = newey_west_tstat(per.values, lag=max(h - 1, 1))
+    naive_t = per.mean() / (per.std() + 1e-12) * np.sqrt(len(per))
+    print(f"  significance: naive t={naive_t:.2f}, Newey-West t={nw_t:.2f} "
+          f"(autocorrelation makes the naive figure optimistic)")
+    print("=" * 78)
+
+
+def report_portfolio_vol_scaled(df: pd.DataFrame, h: int = 3):
+    """
+    Same 10/10 book, but inverse-volatility weighted instead of equal-weighted.
+
+    Equal-weighting silently lets whichever 10/10 names happen to be most
+    volatile that period dominate the book's variance. Weighting by 1/vol_20d
+    (renormalised to sum to 1 across the day's holdings) is the standard
+    risk-parity fix: every name contributes similar risk, not similar capital.
+    """
+    col = f"fwd_{h}d"
+    d = df.dropna(subset=[col, "vol_20d"])
+    rebal = set(np.sort(d["Date"].unique())[::h])
+    held = d[d["Date"].isin(rebal) & (d["score"] == 10) & (d["vol_20d"] > 0)]
+
+    def _weighted_return(x):
+        w = 1.0 / x["vol_20d"]
+        w = w / w.sum()
+        return float((w * x[col]).sum())
+
+    per = held.groupby("Date").apply(_weighted_return).dropna()
+    per_eq = held.groupby("Date")[col].mean().dropna().reindex(per.index)
+    if per.empty:
+        return
+
+    ppy = 252 / h
+    years = len(per) / ppy
+    cum = (1 + per).prod() - 1
+    cum_eq = (1 + per_eq).prod() - 1
+
+    print("\n" + "=" * 78)
+    print(f"PORTFOLIO: same 10/10 book, INVERSE-VOLATILITY weighted, {h}-day rebalance")
+    print("=" * 78)
+    print(f"  cumulative return (vol-scaled)   {cum:+.1%}")
+    print(f"  cumulative return (equal-weight)  {cum_eq:+.1%}")
+    print(f"  annualised (vol-scaled)          {(1 + cum) ** (1 / years) - 1:+.1%}")
+    print(f"  return volatility (vol-scaled)   {per.std() * np.sqrt(ppy):.1%}")
+    print(f"  return volatility (equal-weight) {per_eq.std() * np.sqrt(ppy):.1%}")
+    print(f"  Sharpe (vol-scaled)              "
+          f"{per.mean() / (per.std() + 1e-12) * np.sqrt(ppy):.2f}")
+    print(f"  Sharpe (equal-weight)            "
+          f"{per_eq.mean() / (per_eq.std() + 1e-12) * np.sqrt(ppy):.2f}")
+    eq_curve = (1 + per).cumprod()
+    dd = (eq_curve / eq_curve.cummax() - 1).min()
+    print(f"  max drawdown (vol-scaled)        {dd:+.1%}")
     print("=" * 78)
 
 
@@ -215,6 +298,7 @@ def main():
     report_buckets(df, 3)
     report_portfolio(df, 3)
     report_portfolio(df, 1)
+    report_portfolio_vol_scaled(df, 3)
 
 
 if __name__ == "__main__":

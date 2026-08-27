@@ -61,6 +61,48 @@ Two metrics are used throughout:
 - **within-date AUC** — ranking accuracy on a single day. Pooled AUC across
   dates can look good purely by timing the market; within-date AUC cannot.
 
+### A significance bug, found and fixed
+
+Every t-stat reported earlier in this document (e.g. "t = 5.45" in §3) used
+`t = mean(IC) / std(IC) * sqrt(n_days)`, which assumes each day's IC is an
+independent draw. It is not: with an h-day forward return, day t's IC and day
+t+1's IC are computed from windows that share h−1 days, so the daily IC
+series is autocorrelated by construction — measured lag-1 autocorrelation is
+**0.49** on the shipped model.
+
+Recomputed with a Newey-West HAC standard error (lag = horizon − 1):
+
+| | naive t | Newey-West t |
+|---|---|---|
+| Shipped model (h=3, IC 0.0336) | 6.37 | **4.78** |
+
+The naive figure overstated significance by **1.33x**. 4.78 is still solidly
+significant, so the conclusion doesn't change — but the earlier number was
+wrong, not just imprecise, and every t-stat in this document from here on is
+Newey-West.
+
+A second correction: roughly 20 configurations were compared during model
+selection (§3–§5 below). Reporting only the winning configuration's t-stat
+has the same bias as p-hacking — the "best of many" is expected to look
+better than its true out-of-sample edge. Applying a haircut equal to the
+expected maximum of 20 independent standard-normal draws (1.87, via direct
+Monte Carlo — a first attempt using a closed-form Gumbel approximation was
+wrong by 3-4x and is why this was simulated rather than trusted from a
+formula):
+
+| | t-stat |
+|---|---|
+| Newey-West | 4.78 |
+| **Deflated (20 trials)** | **2.91** |
+
+Still comfortably above the conventional t > 2 bar. This is a conservative
+estimate — many of the 20 trials were correlated variants of each other
+(horizon=3 and horizon=5 share most of the pipeline), so true selection bias
+is likely less than this haircut assumes. `t-stat (naive)`,
+`t-stat (Newey-West)`, and `t-stat (deflated)` are all reported by
+`python -m training.train` and saved to `validation_report.json`, so this
+isn't a one-time calculation — it's re-derived on every retrain.
+
 ### A trap worth documenting: sector-neutral targets
 
 A sector-neutral target ("beat your own sector today") initially scored
@@ -257,7 +299,174 @@ Portfolio detail (3-day rebalance, ~4.1 years): 39.2% annualised gross vs
 drawdown −16.1%. By quarter: profitable in 15 of 18, beat the market in 13
 of 18. Worst quarter was 2026Q1 at −11.0%, when the market fell 11.6%.
 
-## 8. Methodology
+## 8. Where the ceiling actually is
+
+Short version: **the model is at a local optimum for this data.** Sixteen
+distinct techniques have now been measured against the shipped configuration
+on identical purged walk-forward folds. Every one was neutral or negative.
+
+### Advanced techniques (all rejected)
+
+| Technique | rank IC | vs baseline |
+|---|---|---|
+| Baseline (shipped) | **0.0337** | — |
+| Triple-barrier labels (AFML ch.3) | 0.0142 | **much worse** |
+| Anomaly-detector scores as features | 0.0337 | neutral |
+| Meta-labeling (AFML ch.3) | 0.0340 | within noise |
+| Anomaly + meta combined | 0.0339 | within noise |
+
+Triple-barrier labelling — sizing profit-take/stop-loss barriers by each
+stock's own volatility — is standard practice and was the most likely of
+these to work. It halved the signal. The fixed-horizon cross-sectional
+target the model already uses is better suited to a *ranking* problem than a
+path-dependent one.
+
+Meta-labeling (a second model predicting when the first is right) moved IC
+from 0.0337 to 0.0340: a 0.9% change, far inside fold-to-fold noise. Not
+adopted — an extra model doubling inference cost needs to earn more than that.
+
+The anomaly detectors were the interesting case, since this repo already
+ships four of them that the predictor never used. IsolationForest scores over
+the feature panel added **exactly nothing** (0.0337 → 0.0337). Whatever the
+anomaly models detect, the prediction features already capture.
+
+### Regime filtering: a trap worth documenting
+
+Out-of-sample IC is **0.0555 on days the market rose** and **0.0030 on days
+it fell** — the signal essentially disappears in down markets. That looks
+like an obvious opportunity: trade only in good regimes.
+
+It is not, for two reasons.
+
+First, that split uses *same-day* market return, which is not knowable at
+decision time. Tested against regime signals that *are* knowable in advance
+(trailing 20/60-day market return, trailing volatility, breadth, drawdown),
+correlation with next-day IC was weak — the best was |ρ| ≈ 0.14.
+
+Second, and more importantly, filtering **loses money** once idle capital is
+counted:
+
+| Strategy | Periods traded | Total return | Annualised | Win rate |
+|---|---|---|---|---|
+| **Always trade** | 341 | **+283.0%** | **+39.2%** | 61.0% |
+| Only when 60d market return > median | 170 | +88.6% | +16.9% | 61.8% |
+| Only when near market highs | 170 | +130.0% | +22.8% | 65.3% |
+
+Filtering raises *per-trade* win rate (65.3% vs 61.0%) while cutting *total*
+return by more than half, because it sits in cash for the skipped periods. A
+per-trade quality metric that ignores opportunity cost will recommend this
+filter; a total-return metric correctly rejects it.
+
+### The real constraint is data, not algorithm
+
+Since no modelling change helped, the binding constraint was tested directly.
+The panel was rebuilt from 2015 instead of 2021 — 134,211 rows against
+65,997, roughly double the history — and evaluated on the identical 2022-06+
+test period:
+
+| Configuration | Training rows | Features | rank IC |
+|---|---|---|---|
+| 2021+, all features (shipped) | 57,648 | 100 | **0.0334** |
+| 2021+, delivery features removed | 57,648 | 86 | 0.0277 |
+| 2015+, delivery features removed | 116,982 | 86 | 0.0276 |
+
+Two clear conclusions:
+
+1. **Doubling the training history changed nothing** (0.0276 vs 0.0277). The
+   model saturates on price/volume history; it is not data-starved in that
+   dimension.
+2. **NSE delivery data is worth ~21% of the total signal** (0.0334 vs
+   0.0277). Fourteen delivery/microstructure features contribute more than
+   six extra years of price history.
+
+So the path to a materially better model is **more microstructure data**, not
+more history, more features, or a cleverer algorithm. Concretely, the highest-
+value unexplored input is **F&O open interest**: `data/fetch_fo_data.py`
+already exists to download it and `data/raw/fo/` is empty — it has never been
+run. Open interest is the same category of information as delivery percentage
+(who is actually positioned, versus who is merely trading) and is
+particularly informative in Indian markets, where derivatives volume dwarfs
+cash volume. Intraday bars (`data/fetch_intraday.py`, also never run) are the
+second candidate.
+
+## 9. A beta-neutralization attempt, and why it was reverted
+
+§7 found the shipped model's top decile ran a beta of ~1.04 against ~0.93 for
+the bottom decile — some of its apparent edge was amplified market exposure,
+not stock selection. That, plus the Newey-West correction in §2, prompted a
+second round of measurement: five candidate fixes, each tested against the
+identical purged walk-forward folds so the comparison is apples-to-apples.
+
+Reproduce the full comparison with `python -m evaluation.compare_configs`
+(slow — fits ~200 models); see the shipped result alone, faster, via
+`python -m training.train`.
+
+| Addition | rank IC | Newey-West t | beta-tilt |
+|---|---|---|---|
+| Baseline (shipped in §5) | 0.0336 | 4.78 | +0.117 |
+| + sample-uniqueness weighting (Lopez de Prado) | 0.0320 | 4.53 | +0.112 |
+| + feature winsorization (1st/99th pct, per-day) | 0.0323 | 4.57 | +0.109 |
+| **+ beta/sector neutralization** | **0.0459** | **7.21** | **−0.073** |
+| + linear (ElasticNet) diversifier blended in | 0.0325 | 4.45 | +0.127 |
+| All five combined | 0.0433 | 6.59 | −0.053 |
+
+Three of five made things worse and were rejected:
+
+- **Sample-uniqueness weighting** downweights rows whose forward-return
+  windows overlap (standard practice for overlapping labels). With only 48
+  stocks and a 3-day horizon, this just discards information without adding
+  real diversity — theoretically well-motivated, empirically negative here.
+- **Winsorization** protects against outliers distorting a fit. Tree splits
+  are already robust to extreme values by construction (a threshold split
+  isn't pulled toward outliers the way a mean or a linear coefficient is),
+  so this was solving a problem the model didn't have.
+- **A linear diversifier** (30% weight) blended into the ensemble measured
+  worse alone, confirming linear models don't add much here — consistent
+  with cross-sectional normalisation and feature selection also hurting
+  in §4. The signal appears to live in nonlinear feature interactions that
+  linear models can't capture at this sample size.
+
+Beta/sector neutralization initially appeared to win big: rank IC 0.0336 →
+**0.0459** (+37%), Newey-West t 4.78 → 7.21, with the beta-tilt closing from
++0.117 to −0.073. It was implemented and shipped.
+
+**It was then caught and reverted.** Wiring it into production dropped rank
+IC to **0.0237 — well below simply not neutralizing at all.** The cause was
+a mismatch between how the experiment measured it and how a live predictor
+must apply it:
+
+| How the regression is fit | rank IC | Deployable? |
+|---|---|---|
+| No neutralization (baseline) | **0.0336** | yes |
+| Per-date (~48 rows, ~17 params) | 0.0237 | yes, but worse |
+| Coefficients fit on training panel, applied fixed | 0.0311 | yes, still worse |
+| Pooled across the whole test period | 0.0459 | **no — uses future dates** |
+
+Only the pooled-across-test-period variant beat the baseline, and it beats it
+precisely *because* it pools: fitting one regression over ~170 test days lets
+each day's residual borrow information about the composition of other days in
+that window. A live predictor scoring one day at a time cannot reproduce
+that without seeing the future. The two genuinely causal variants — per-date,
+and fixed coefficients from training data — both underperform doing nothing.
+
+The per-date version fails for a separate and more mundane reason: ~48 stocks
+against beta plus ~15 sector dummies is barely more observations than
+parameters, so the fitted residual is mostly noise.
+
+**Shipped configuration is no neutralization.** `models/predictor.py` and
+`training/train.py` both carry comments recording this, so it does not get
+re-attempted. `evaluation/stats.py` retains
+`fit_neutralization_coefs`/`apply_neutralization_coefs` for exploratory use,
+documented as not-for-production.
+
+The broader lesson, and the reason this section is kept rather than deleted:
+**an offline experiment can be accidentally non-causal even when the
+walk-forward split itself is clean.** The fold boundaries were correct; the
+leak was in a post-processing step applied across the whole test block. The
+check that caught it was simply running the real production pipeline and
+noticing the number went *down*.
+
+## 10. Methodology
 
 - **Purged walk-forward.** Six expanding-window folds. The last `horizon`
   days of every training window are dropped, because those rows' forward
@@ -265,15 +474,22 @@ of 18. Worst quarter was 2026Q1 at −11.0%, when the market fell 11.6%.
 - **Cross-sectional target.** Per day, the top and bottom tails of the
   forward-return distribution are labelled 1 and 0; the ambiguous middle is
   dropped from training.
+- **Autocorrelation-aware significance.** All t-stats use Newey-West HAC
+  standard errors (§2), and the headline figure is additionally deflated for
+  the number of configurations compared during development (§2, §8).
+- **No beta/sector neutralization.** Tried and reverted (§9): every causally
+  valid form of it measured worse than leaving scores alone. The score
+  therefore carries a mild beta tilt, documented in §7.
 - **No survivorship correction.** The universe is 48 currently-listed NSE
   stocks, so results are optimistic to the extent that delisted names are
   absent. Worth stating plainly rather than hiding.
 - **Scores are relative.** A score of 10 means "top of this universe today",
   not "will go up 10%".
 
-## 9. Honest summary
+## 11. Honest summary
 
-The signal is **real and statistically significant** (t-stat > 5) but
-**small**, which is what a genuine edge in liquid large-cap equities looks
-like. Anyone reporting 60%+ directional accuracy on daily equity prediction
-is measuring something other than what they think.
+The signal is **real and statistically significant even after correcting for
+autocorrelation and the number of configurations tried** (rank IC 0.0336,
+Newey-West t = 4.78, deflated t = 2.80), but it remains **small**, which is what a genuine edge in liquid large-cap
+equities looks like. Anyone reporting 60%+ directional accuracy on daily
+equity prediction is measuring something other than what they think.
