@@ -415,6 +415,33 @@ t = 1.27 it is not significant, and finding it after the fact in one of two
 halves is exactly the kind of result this project has already been burned by
 twice. Not actioned.
 
+### A narrower hedge, tried and rejected
+
+The whole-market hedge above shorts *any* bottom stock against *any* top
+stock, which removes market beta but also mixes in unrelated sector rotation
+— noise the model was never asked to predict. A more surgical construction
+was tested: within **each sector**, long the single highest-ranked stock and
+short the single lowest-ranked stock. If the model has real within-sector
+stock-picking skill, this should isolate it more cleanly than a blanket
+market hedge.
+
+It performed worse than the hedge it was meant to improve on:
+
+| Book | Full period net | Half A (bull) | Half B (flat) | NW-t (full) |
+|---|---|---|---|---|
+| Dollar-neutral (whole market) | +9.5% | −8.1% | +19.1% | 0.57 |
+| **Sector pairs** | **−3.0%** | −3.2% | +0.3% | **−0.31** |
+| Sector pairs, liquid sectors only (≥4 names) | −3.6% | −3.7% | +0.1% | −0.19 |
+
+Negative in both halves, negative Sharpe, negative t-stat. Restricting to
+sectors with at least 4 names (avoiding degenerate 1-2 stock "sectors")
+didn't help. Rejected.
+
+This closes off the last plausible construction for hedgeable alpha in this
+model. The conclusion from earlier in this section stands without
+qualification: at market level or sector level, there is no stock-selection
+edge here strong enough to survive removing market exposure.
+
 ### What to call this strategy honestly
 
 It is a **long-only equity strategy that mildly outperforms its benchmark**,
