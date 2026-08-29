@@ -15,6 +15,9 @@ results/tables/
 # Built feature panel (rebuild with data/build_panel.py)
 data/features/
 
+# Downloaded caches for one-off experiments (rebuilt on demand)
+experiments/.cache/
+
 # OS
 .DS_Store
 Thumbs.db
