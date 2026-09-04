@@ -58,6 +58,27 @@ minutes — each fits dozens to hundreds of LightGBM models.
 | 10 | [`10_sector_relative_pairs.py`](10_sector_relative_pairs.py) | Does a narrower, sector-relative hedge recover the alpha the market-wide hedge missed? | REJECTED — worse than the hedge it was meant to improve (t=−0.31 vs t=0.57) | Confirms rather than contradicts #09: there is no stock-selection edge here strong enough to survive removing market exposure, at any granularity tried |
 | 11 | [`11_second_round_portfolio_strategies.py`](11_second_round_portfolio_strategies.py) | 8 more constructions: vol targeting, trend filter, partial rebalancing, stop-loss, rank persistence, long/hedge blend, rank momentum, sector cap | REJECTED, all eight (full-period Sharpe: baseline 1.39; best was vol-target at 1.41) | Vol-targeting's apparent win fails the regime split (better in bull, worse in flat, worse maxDD) — it levers up exactly when trailing vol is low, i.e. right before a choppy patch, which just times more market-beta rather than adding edge. Partial rebalancing (meant to cut turnover) churns just as much via its top-quartile "keep" rule. Stop-loss worsens drawdown by locking in losses on names that would have mean-reverted. Sector cap is the one benign result — statistically indistinguishable from baseline, a free concentration-risk control, not a performance gain |
 
+| 12 | [`12_quant_diagnostics.py`](12_quant_diagnostics.py) | Fama-MacBeth regressions, signal decay term structure, score persistence, PSR/Deflated Sharpe Ratio, block-bootstrapped drawdown, capacity | DIAGNOSTIC — no adopt/reject, this analyses the shipped strategy rather than competing with it | Confirms via an independent method (linear cross-sectional regression, not ablation) that delivery data is the real driver; explains WHY #11's partial rebalancing failed (median top-decile membership is 1 day — daily rank is near-pure noise); found and helped fix a real drawdown-measurement bug (see below) |
+
+## A measurement bug this diagnostic round found and fixed
+
+Experiment #12's block-bootstrap needed the strategy's own daily-tracked
+drawdown for comparison, which surfaced a real bug in
+[`evaluation/score_backtest.py`](../evaluation/score_backtest.py): its
+`report_portfolio` and `report_holding_period_sweep` sampled portfolio
+equity only at rebalance boundaries (every 30 days, for the shipped
+strategy), which cannot see a drawdown that occurs and recovers *within* a
+hold. This understated the 30-day book's max drawdown by roughly 60%
+(**−8.7%** reported vs the correct **−14.0%**). Fixed in
+`_daily_tracked_drawdown` (with a second, subtler bug — a missing baseline
+anchor point — caught by
+[`tests/test_score_backtest.py`](../tests/test_score_backtest.py) before it
+shipped). `docs/MODEL_VALIDATION.md` §8 and `README.md` are corrected.
+
+Not a portfolio-construction finding, but the same category of lesson as #2
+below: a plausible-looking calculation can be wrong in a way that only shows
+up once you ask a sharper question of it.
+
 ## The three lessons worth internalising before writing new code
 
 These recur across multiple independent experiments above, which is why

@@ -34,8 +34,9 @@ All figures are out-of-sample, from purged walk-forward validation:
 **Ranking horizon and holding period are different numbers.** The model ranks
 on a 3-day target because that is where signal peaks, but a 3-day *hold*
 rebalances ~84x/year and measured **−1.9% net** of 10bps costs. A 30-day hold
-measured **+126.6% net**, with win rate rising 56.1% → 65.3% and max drawdown
-falling −16.1% → −8.7%. Turnover, not signal, was the binding constraint.
+measured **+126.6% net**, with win rate rising 56.1% → 65.3% at a comparable
+max drawdown (−16.9% vs −14.0%, tracked daily through each hold). Turnover,
+not signal, was the binding constraint.
 
 **How much of this is alpha?** Hedged against the market, very little: a
 dollar-neutral long−short book returns +9.5% over four years at **t = 0.57**,

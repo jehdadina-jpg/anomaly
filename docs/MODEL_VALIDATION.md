@@ -313,16 +313,25 @@ decision, governed by turnover. Measured on the top-decile book,
 | Hold | Rebalances | Win rate | Gross | **Net @10bps** | Net @20bps | Sharpe | Max DD |
 |---|---|---|---|---|---|---|---|
 | 1 day | 1,025 | 53.0% | +270.0% | **−93.9%** | −99.9% | 2.00 | −20.9% |
-| 3 days *(what the UI implied)* | 341 | 56.1% | +283.0% | **−1.9%** | −75.0% | 1.88 | −16.1% |
-| 7 days | 146 | 57.3% | +163.9% | +47.5% | −17.7% | 1.46 | −15.5% |
-| 15 days | 68 | 60.6% | +132.0% | +77.2% | +35.2% | 1.40 | −13.7% |
-| **30 days** | 34 | **65.3%** | +158.7% | **+126.6%** | **+98.3%** | 1.57 | **−8.7%** |
+| 3 days *(what the UI implied)* | 341 | 56.1% | +283.0% | **−1.9%** | −75.0% | 1.88 | −16.9% |
+| 7 days | 146 | 57.3% | +163.9% | +47.5% | −17.7% | 1.46 | −17.8% |
+| 15 days | 68 | 60.6% | +132.0% | +77.2% | +35.2% | 1.40 | −16.6% |
+| **30 days** | 34 | **65.3%** | +158.7% | **+126.6%** | **+98.3%** | 1.57 | **−14.0%** |
+
+Max DD here is tracked from the DAILY equity path through each hold, not
+sampled only at rebalance boundaries — an earlier version of this table
+quoted −8.7% for the 30-day hold, sampling equity only every 30 days, which
+missed any drawdown that occurred and recovered *within* a hold. That was a
+real bug in `evaluation/score_backtest.py`, not a modelling choice; it is
+fixed (`_daily_tracked_drawdown`) and every number above reflects the fix.
 
 Same model, same scores, same universe. Only the holding period changes.
 Moving from a 3-day to a 30-day hold takes net return from **−1.9% to
-+126.6%**, raises the win rate from 56.1% to **65.3%**, and roughly halves
-max drawdown (−16.1% → −8.7%). For reference, equal-weight buy-and-hold over
-the same window returned +96.2% *before* costs.
++126.6%** and raises the win rate from 56.1% to **65.3%**, at roughly
+comparable drawdown (−16.9% vs −14.0%) rather than the "roughly halves"
+relationship an earlier, buggy measurement suggested. For reference,
+equal-weight buy-and-hold over the same window returned +96.2% *before*
+costs.
 
 Note the ordering: the shortest holds look **best gross and worst net**. A
 1-day hold earns +270% gross and loses 93.9% net. Turnover, not signal, is
@@ -354,9 +363,13 @@ validation half). It looked like a clean win.
 
 As an actual portfolio it was worse: **+26.7% gross / +1.7% net against
 +119.2% / +46.1%** for the unfiltered decile at the same 10-day hold, with
-Sharpe falling 1.19 → 0.62 and drawdown worsening −13.0% → −22.0%. The filter
-cuts the book from ~5 names a day to ~0.9, and the resulting concentration
-costs more in variance than the higher hit rate returns. Rejected.
+Sharpe falling 1.19 → 0.62 and drawdown worsening −13.0% → −22.0% (these two
+drawdown figures predate the fix described in §8 above and use the same
+rebalance-only sampling that understated the 30-day book's own drawdown by
+~60% — both numbers here are directionally right, worse than the unfiltered
+book, but likely both understated in absolute size). The filter cuts the
+book from ~5 names a day to ~0.9, and the resulting concentration costs more
+in variance than the higher hit rate returns. Rejected.
 
 This is the same lesson as the regime filter in §9, arriving by a different
 route: **a per-trade accuracy metric will happily recommend a worse
@@ -617,7 +630,78 @@ leak was in a post-processing step applied across the whole test block. The
 check that caught it was simply running the real production pipeline and
 noticing the number went *down*.
 
-## 12. Methodology
+## 12. Classic quant diagnostics
+
+Everything above treats the LightGBM ensemble as a black box and tests
+portfolio constructions around it. This section asks a different kind of
+question, using standard equity quant-research methods, about the
+already-shipped strategy: not "can we beat it" but "what is actually being
+relied on, and how much should the risk numbers be trusted." Full detail and
+reproducible code in
+[`experiments/12_quant_diagnostics.py`](../experiments/12_quant_diagnostics.py).
+
+**Fama-MacBeth cross-sectional regressions** — the classic Fama & French
+(1973) two-step procedure — were run on 16 candidate features independently
+of the ML model. Only 3 are individually significant (|Newey-West t| > 2):
+`delivery_pct_z20` (t=2.79), `delivery_pct_trend` (t=2.84), and
+`vs_sector_ret_5d` (t=−2.70, mean-reverting). This is an **independent
+confirmation, via an unrelated method**, of the ablation finding in §10 that
+delivery/microstructure data carries roughly 21% of the model's total
+signal. A simple linear combination of the top-5 Fama-MacBeth features
+reaches rank IC 0.0291 (t=3.26) against the shipped ensemble's 0.0336
+(t=4.78) — 87% of the nonlinear model's signal from 5 linearly-combined
+features. Not a reason to replace the ensemble, which still wins by more
+than the raw IC gap once t-stats are compared, but evidence the model isn't
+relying on exotic interactions — a handful of known, mostly-linear drivers
+account for most of it.
+
+**Signal decay term structure** (not the horizon-selection search in §3,
+which trains separate models — this holds the shipped 3-day-trained score
+fixed and asks how long it keeps meaning anything): correlation with
+forward returns actually peaks around 7 days (IC 0.0360) and has not decayed
+to half its peak even by day 30 (IC 0.0234).
+
+**Score persistence** explains a result from §8/experiments/11 that had no
+clear mechanism at the time. Median time a name spends *continuously* in the
+top decile is **1 trading day** (mean 1.9, 90th percentile 4 days) — daily
+rank is almost pure noise. This is exactly why "partial rebalancing" (keep
+names still in the top quartile, replace only drop-outs) measured worse than
+full reconstruction: it was asking a question — "is this name still
+top-ranked" — that flips too fast to be meaningful day to day. The 30-day
+hold works despite this, not because of it: per the term structure above,
+the *score* still predicts 30-day-forward returns even though the *rank
+order* churns completely within days.
+
+**Probabilistic and Deflated Sharpe Ratio** (Bailey & López de Prado) apply
+the same rigor already used for the model's rank IC (§2) to the *strategy's*
+Sharpe ratio, which had never been corrected for return non-normality or
+multiple testing. Daily returns of the shipped 30-day book have skew −0.15
+and excess kurtosis 4.40 (fat-tailed vs. a normal distribution's 3.0) — a
+raw Sharpe ratio assumes normality and doesn't account for this. PSR(SR\*=0)
+= **99.7%**: even correcting for skew/kurtosis, the true Sharpe is very
+likely positive. Deflating further for ~12 portfolio-construction trials
+(experiments/07–11) gives a **Deflated Sharpe Ratio of 87.6%** — still
+comfortably supportive, but a real, non-trivial amount of estimation
+uncertainty, more honest than quoting the raw Sharpe of 1.39 as if it were
+exact.
+
+**Block-bootstrapped drawdown** matters because a single historical
+backtest is one realisation of a random process, not a guarantee. Resampling
+the shipped book's daily returns 5,000 times (20-day blocks, preserving
+autocorrelation) gives a 95th-percentile tail outcome of **−27.2%** —
+materially worse than any single historical path in this document. The
+median bootstrap total return (+169%) comfortably exceeds what actually
+happened, so the distribution is not pessimistic overall, but neither figure
+in this document's tables should be read as a worst-case bound.
+
+**Capacity**: using the 10th-percentile average daily turnover of
+typically-selected names (real bhavcopy data) and a conservative 5–10% of
+ADV per position, estimated strategy capacity is roughly **Rs 17–34 crore
+(~$2–4M)**. This is a small, PA-scale strategy given the liquidity of the
+less-liquid names in a 48-stock universe — not evidence against the signal,
+but a real constraint on how it could be deployed.
+
+## 13. Methodology
 
 - **Purged walk-forward.** Six expanding-window folds. The last `horizon`
   days of every training window are dropped, because those rows' forward
@@ -637,7 +721,7 @@ noticing the number went *down*.
 - **Scores are relative.** A score of 10 means "top of this universe today",
   not "will go up 10%".
 
-## 13. Honest summary
+## 14. Honest summary
 
 **The ranking signal is real.** Rank IC 0.0336, Newey-West t = 4.78, deflated
 to t = 2.80 after accounting for the ~26 configurations compared. It survives

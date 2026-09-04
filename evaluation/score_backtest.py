@@ -181,6 +181,52 @@ def report_buckets(df: pd.DataFrame, h: int):
     print("=" * 78)
 
 
+def _daily_tracked_drawdown(df: pd.DataFrame, h: int, entry_dates: np.ndarray) -> float:
+    """
+    Max drawdown from the DAILY equity path through each hold, not just the
+    return realised at each rebalance boundary.
+
+    Sampling equity only every h days (as this function's caller originally
+    did) misses any drawdown that occurs and recovers WITHIN a hold -- a
+    name down 25% on day 10 of a 30-day hold that recovers to +5% by day 30
+    contributes zero to a period-only drawdown calculation despite the
+    -25% being real, live risk for anyone holding it. Measured on this
+    project's shipped 30-day book: period-only drawdown reads -8.7%; the
+    daily-tracked figure below reads -14.6%, and a block-bootstrap of the
+    daily path (experiments/12_quant_diagnostics.py) puts the 95th-
+    percentile tail outcome at -27.2%. Report the daily figure.
+    """
+    px = df.pivot_table(index="Date", columns="ticker", values="Close").sort_index()
+    scorewide = df.pivot_table(index="Date", columns="ticker", values="score")
+    ret = px.pct_change().shift(-1)
+    dates = px.index.to_numpy()
+    date_to_i = {d: i for i, d in enumerate(dates)}
+
+    w = pd.DataFrame(0.0, index=px.index, columns=px.columns)
+    for entry in entry_dates:
+        i = date_to_i.get(entry)
+        if i is None:
+            continue
+        sel = scorewide.iloc[i] == 10
+        if sel.sum() == 0:
+            continue
+        end = min(i + h, len(dates))
+        w.iloc[i:end] = np.where(sel.values, 1.0 / sel.sum(), 0.0)
+
+    daily = (w * ret).sum(axis=1).dropna()
+    if daily.empty:
+        return float("nan")
+    # Anchor the curve at 1.0 BEFORE the first return is applied. Without
+    # this, cumprod's first element already has day-1's return baked in, so
+    # a drop on day 1 of a hold is measured from an already-reduced value
+    # instead of the true entry price -- understating exactly the kind of
+    # drawdown this function exists to catch (caught by
+    # tests/test_score_backtest.py::test_catches_intra_hold_drawdown_that_
+    # fully_recovers, which failed by ~3pp before this line was added).
+    eq = pd.concat([pd.Series([1.0]), (1 + daily).cumprod()], ignore_index=True)
+    return float((eq / eq.cummax() - 1).min())
+
+
 def report_portfolio(df: pd.DataFrame, h: int = 3):
     """
     Hold all 10/10 names equally, rebalancing every h days.
@@ -219,8 +265,11 @@ def report_portfolio(df: pd.DataFrame, h: int = 3):
     print(f"  best period              {per.max():+.1%}")
 
     eq = (1 + per).cumprod()
-    dd = (eq / eq.cummax() - 1).min()
-    print(f"  max drawdown             {dd:+.1%}")
+    dd_period_only = (eq / eq.cummax() - 1).min()
+    dd_daily = _daily_tracked_drawdown(df, h, per.index.to_numpy())
+    print(f"  max drawdown (daily-tracked)   {dd_daily:+.1%}")
+    print(f"  max drawdown (rebalance-only)  {dd_period_only:+.1%}  "
+          f"<- understates risk, see _daily_tracked_drawdown docstring")
 
     net = per - 4 * 10 / 10000
     cum_net = (1 + net).prod() - 1
@@ -311,11 +360,11 @@ def report_holding_period_sweep(df: pd.DataFrame):
                 lambda x: x.shift(-h) / x - 1)
             d = d.merge(panel[["Date", "ticker", col]], on=["Date", "ticker"], how="left")
 
-    print("\n" + "=" * 88)
+    print("\n" + "=" * 96)
     print("HOLDING PERIOD SWEEP  (top-decile book, equal weight)")
-    print("=" * 88)
+    print("=" * 96)
     print(f"{'hold':>5s} {'rebals':>7s} {'WIN':>7s} {'gross':>9s} {'net@10bp':>10s} "
-          f"{'net@20bp':>10s} {'Sharpe':>7s} {'maxDD':>7s} {'NW-t':>6s}")
+          f"{'net@20bp':>10s} {'Sharpe':>7s} {'maxDD':>9s} {'NW-t':>6s}")
     for h in holds:
         col = f"fwd_{h}d"
         x = d.dropna(subset=[col])
@@ -329,14 +378,20 @@ def report_holding_period_sweep(df: pd.DataFrame):
         n10 = (1 + (per - 4 * 10 / 10000)).prod() - 1
         n20 = (1 + (per - 4 * 20 / 10000)).prod() - 1
         sharpe = per.mean() / (per.std() + 1e-12) * np.sqrt(ppy)
-        eq = (1 + per).cumprod()
-        dd = (eq / eq.cummax() - 1).min()
+        # Daily-tracked, not sampled only at rebalance boundaries -- a period-
+        # only drawdown misses intra-hold dips that recover by the next
+        # rebalance. See _daily_tracked_drawdown's docstring for the size of
+        # the gap this closes (roughly 2x at a 30-day hold).
+        dsrc = x.rename(columns={col: "fwd_h"})
+        dsrc["score"] = np.where(dsrc["rk"] >= 0.90, 10, 0)
+        dd = _daily_tracked_drawdown(dsrc, h, per.index.to_numpy())
         _, t = newey_west_tstat(per.values, lag=1)
         print(f"{h:4d}d {len(per):7d} {(held[col] > 0).mean():6.1%} {gross:+9.1%} "
-              f"{n10:+10.1%} {n20:+10.1%} {sharpe:7.2f} {dd:+7.1%} {t:6.2f}")
-    print("=" * 88)
+              f"{n10:+10.1%} {n20:+10.1%} {sharpe:7.2f} {dd:+8.1%} {t:6.2f}")
+    print("=" * 96)
     print("Short holds look best GROSS and lose worst NET. Turnover, not signal,")
-    print("is the binding constraint on this strategy.")
+    print("is the binding constraint on this strategy. maxDD is daily-tracked,")
+    print("not sampled only at rebalance points.")
 
 
 def main():
