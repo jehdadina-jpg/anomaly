@@ -3,9 +3,11 @@
 **Read this before trying to improve the ATLAS prediction model.** Every
 entry below is a technique that was actually implemented and measured
 against the shipped configuration on identical purged walk-forward folds —
-not a guess about what might work. Nineteen of twenty-one were rejected.
-Re-running a rejected idea without reading why it failed here is the single
-most likely way to waste a session on this project.
+not a guess about what might work. Over 30 distinct techniques have been
+tried across the rows below (several rows bundle 3+ variants each); exactly
+**one** — the holding-period change in row 07 — produced an adopted
+improvement. Re-running a rejected idea without reading why it failed here
+is the single most likely way to waste a session on this project.
 
 **The shipped configuration**, unchanged by everything in this folder:
 cross-sectional ranking model, 3-day ranking horizon, LightGBM ensemble
@@ -54,6 +56,7 @@ minutes — each fits dozens to hundreds of LightGBM models.
 | 08 | [`08_portfolio_construction.py`](08_portfolio_construction.py) | Overlapping tranches, inverse-vol weighting, signal-decay exit | Overlapping tranches: robustness CONFIRMED (not luck on one entry grid). Inverse-vol: neutral. Decay-exit: REJECTED (turnover) | Overlapping tranches also revealed the single-grid drawdown (−14.6%) was partly lucky — true figure is −24.1%; decay-exit's adaptive holding drove turnover to 15.2%/day |
 | 09 | [`09_market_neutral_hedging.py`](09_market_neutral_hedging.py) | How much of the return is genuine alpha vs market beta? | **Most important finding in the project** — dollar-neutral long-short is statistically zero (t=0.57) | Long-only book beats market by only ~6–8pp per regime-half; the +117% headline is ~90% a rising market, not stock-picking |
 | 10 | [`10_sector_relative_pairs.py`](10_sector_relative_pairs.py) | Does a narrower, sector-relative hedge recover the alpha the market-wide hedge missed? | REJECTED — worse than the hedge it was meant to improve (t=−0.31 vs t=0.57) | Confirms rather than contradicts #09: there is no stock-selection edge here strong enough to survive removing market exposure, at any granularity tried |
+| 11 | [`11_second_round_portfolio_strategies.py`](11_second_round_portfolio_strategies.py) | 8 more constructions: vol targeting, trend filter, partial rebalancing, stop-loss, rank persistence, long/hedge blend, rank momentum, sector cap | REJECTED, all eight (full-period Sharpe: baseline 1.39; best was vol-target at 1.41) | Vol-targeting's apparent win fails the regime split (better in bull, worse in flat, worse maxDD) — it levers up exactly when trailing vol is low, i.e. right before a choppy patch, which just times more market-beta rather than adding edge. Partial rebalancing (meant to cut turnover) churns just as much via its top-quartile "keep" rule. Stop-loss worsens drawdown by locking in losses on names that would have mean-reverted. Sector cap is the one benign result — statistically indistinguishable from baseline, a free concentration-risk control, not a performance gain |
 
 ## The three lessons worth internalising before writing new code
 
